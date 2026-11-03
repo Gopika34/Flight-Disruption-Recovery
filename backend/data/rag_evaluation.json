@@ -1,0 +1,304 @@
+{
+  "document_id": "DGCA_CAR_SECTION3_SERIES_M_PART_IV_REV4",
+  "document_title": "Civil Aviation Requirements, Section 3 – Air Transport, Series M Part IV",
+  "issuing_authority": "Directorate General of Civil Aviation, Government of India",
+  "issue_date": "2010-08-06",
+  "revision": "Revision 4",
+  "revision_date": "2023-01-25",
+  "effective_date": "2023-02-15",
+  "pdf_pages": 8,
+  "source_file": "dgca_car.pdf",
+  "source_url": null,
+  "dataset_version": "1.2",
+  "schema_note": "expected_clause_ids is always an array. source_verified refers to clause mapping against uploaded PDF, not proof of case facts or legal outcome.",
+  "cases": [
+    {
+      "question_id": "RAG-001",
+      "question": "What compensation applies if I am involuntarily denied boarding?",
+      "expected_topic": "denied_boarding",
+      "expected_clause_ids": [
+        "3.2.1",
+        "3.2.2"
+      ],
+      "required_behavior": "Explain one-hour no-compensation condition and alternate timing bands/caps; ask for missing fare and timing.",
+      "must_not_claim": "Do not give one amount without required inputs.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-002",
+      "question": "My flight was cancelled and I was told 3 hours before departure. What are my options?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.1",
+        "3.3.2"
+      ],
+      "required_behavior": "Separate alternate, full refund and compensation; ask about contact information and cause.",
+      "must_not_claim": "Do not merge all remedies.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-003",
+      "question": "How is cancellation compensation calculated for a flight over 2 hours block time?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.2"
+      ],
+      "required_behavior": "Lesser of INR 10000 or one-way basic fare plus airline fuel charge if conditions apply.",
+      "must_not_claim": "Do not include taxes in compensation base.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-004",
+      "question": "What facilities are provided during flight delays?",
+      "expected_topic": "delay",
+      "expected_clause_ids": [
+        "3.4.1",
+        "3.4.2",
+        "3.4.3",
+        "3.4.4",
+        "3.8.1"
+      ],
+      "required_behavior": "Explain meal thresholds, alternate/refund option, hotel threshold and exception.",
+      "must_not_claim": "Do not promise hotel for every delay.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-005",
+      "question": "My domestic flight is delayed more than 6 hours. Can I request a refund?",
+      "expected_topic": "delay",
+      "expected_clause_ids": [
+        "3.4.2",
+        "3.4.4"
+      ],
+      "required_behavior": "Explain alternate within 6h or full refund, subject to conditions/exception.",
+      "must_not_claim": "Do not say 6 hours or more.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-006",
+      "question": "When are meals and refreshments required during a delay?",
+      "expected_topic": "delay",
+      "expected_clause_ids": [
+        "3.4.1",
+        "3.8.1(a)"
+      ],
+      "required_behavior": "Use block-time-specific thresholds and on-time check-in condition.",
+      "must_not_claim": "Do not use one threshold for every flight.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-007",
+      "question": "When does a passenger get hotel accommodation during a delay?",
+      "expected_topic": "delay",
+      "expected_clause_ids": [
+        "3.4.3",
+        "3.8.1(b)"
+      ],
+      "required_behavior": "More than 24h generally, or more than 6h for departures 20:00–03:00; hotel when necessary.",
+      "must_not_claim": "Do not state it is automatic.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-008",
+      "question": "Where can I complain if the airline does not provide required facilities?",
+      "expected_topic": "redressal",
+      "expected_clause_ids": [
+        "3.9.1",
+        "3.9.2",
+        "3.9.3"
+      ],
+      "required_behavior": "Airline, Air Sewa, then statutory body/court if dissatisfied.",
+      "must_not_claim": "Do not invent deadlines.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-009",
+      "question": "My flight was cancelled and I missed a connection on the same ticket. What rules apply?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.2"
+      ],
+      "required_behavior": "Retrieve cancellation/missed-connection clause; use denied-boarding rule only if facts also show denied boarding.",
+      "must_not_claim": "Do not cite unrelated downgrade clause.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-010",
+      "question": "Does weather or ATC remove all passenger rights after cancellation?",
+      "expected_topic": "exceptions",
+      "expected_clause_ids": [
+        "1.4",
+        "1.5",
+        "3.3.4",
+        "3.3.5"
+      ],
+      "required_behavior": "Separate compensation exception from refund/alternate analysis.",
+      "must_not_claim": "Do not claim all remedies disappear.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-011",
+      "question": "Is every technical problem an extraordinary circumstance?",
+      "expected_topic": "exceptions",
+      "expected_clause_ids": [
+        "1.4",
+        "1.5"
+      ],
+      "required_behavior": "Explain general criteria/examples; specific technical issue needs evidence and careful analysis.",
+      "must_not_claim": "Do not automatically classify all technical faults either way.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-012",
+      "question": "What if I did not give the airline my email or phone number?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.3"
+      ],
+      "required_behavior": "No financial compensation, but refund or reasonable alternate arrangements remain described.",
+      "must_not_claim": "Do not say passenger loses refund/alternate.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-013",
+      "question": "What counts as denied boarding?",
+      "expected_topic": "definitions",
+      "expected_clause_ids": [
+        "2.6",
+        "3.2.1"
+      ],
+      "required_behavior": "Explain confirmed booking, timely presentation and exceptions.",
+      "must_not_claim": "Do not omit health/safety/security/document exceptions.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-014",
+      "question": "What must an airline do before denying boarding due to overbooking?",
+      "expected_topic": "denied_boarding",
+      "expected_clause_ids": [
+        "3.2.1"
+      ],
+      "required_behavior": "Ask volunteers first where practical.",
+      "must_not_claim": "Do not omit volunteer-first process.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-015",
+      "question": "Where can I complain if the airline does not resolve my issue?",
+      "expected_topic": "redressal",
+      "expected_clause_ids": [
+        "3.9.1",
+        "3.9.2",
+        "3.9.3"
+      ],
+      "required_behavior": "Describe airline, Air Sewa, statutory body/court sequence.",
+      "must_not_claim": "Do not guarantee outcome.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-016",
+      "question": "How is cancellation compensation calculated for an 80-minute block-time flight?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.2"
+      ],
+      "required_behavior": "Lesser of INR 7500 or basic fare plus airline fuel charge if the rule applies (80 minutes is more than 1 hour and up to 2 hours).",
+      "must_not_claim": "Do not use the up-to-1-hour band (INR 5000).",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-017",
+      "question": "How is an involuntary domestic downgrade compensated?",
+      "expected_topic": "downgrading",
+      "expected_clause_ids": [
+        "3.5.1"
+      ],
+      "required_behavior": "75% of ticket cost including taxes.",
+      "must_not_claim": "Do not apply international distance bands to domestic travel.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-018",
+      "question": "Show alternative flights from Chennai to Delhi after 11:00.",
+      "expected_topic": "app_behavior",
+      "expected_clause_ids": [],
+      "required_behavior": "Use demo data and label all results simulated.",
+      "must_not_claim": "Do not call data live.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-019",
+      "question": "I do not know when the airline notified me. Am I eligible?",
+      "expected_topic": "missing_information",
+      "expected_clause_ids": [],
+      "required_behavior": "Ask for notice time before selecting a cancellation branch.",
+      "must_not_claim": "Do not convert unknown to zero.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-020",
+      "question": "Can you confirm the airline's stated reason is true?",
+      "expected_topic": "source_verification",
+      "expected_clause_ids": [],
+      "required_behavior": "Distinguish stated cause from independently verified cause.",
+      "must_not_claim": "Do not claim verification without evidence.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-021",
+      "question": "Will I definitely receive compensation if a clause matches?",
+      "expected_topic": "uncertainty",
+      "expected_clause_ids": [],
+      "required_behavior": "Explain eligibility depends on all facts, exceptions and current rules.",
+      "must_not_claim": "Do not guarantee legal outcome.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-022",
+      "question": "What if I was not informed about cancellation as required?",
+      "expected_topic": "cancellation",
+      "expected_clause_ids": [
+        "3.3.1",
+        "3.3.2"
+      ],
+      "required_behavior": "Explain acceptable alternate or compensation in addition to full refund if conditions apply.",
+      "must_not_claim": "Do not describe compensation as replacing refund.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-023",
+      "question": "What does block time mean?",
+      "expected_topic": "definitions",
+      "expected_clause_ids": [
+        "2.9"
+      ],
+      "required_behavior": "Use definition from the CAR.",
+      "must_not_claim": "Do not confuse block time with delay duration.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-024",
+      "question": "My flight was delayed due to ATC. Are meals still required?",
+      "expected_topic": "delay",
+      "expected_clause_ids": [
+        "1.5",
+        "3.4.1",
+        "3.4.4"
+      ],
+      "required_behavior": "Verify attribution and exception conditions before deciding facilities.",
+      "must_not_claim": "Do not exempt airline based only on an unverified label.",
+      "source_verified": true
+    },
+    {
+      "question_id": "RAG-025",
+      "question": "What are detailed refund rules under the separate ticket-refund CAR?",
+      "expected_topic": "refund",
+      "expected_clause_ids": [
+        "3.3.5"
+      ],
+      "required_behavior": "Say 3.3.5 refers to CAR Section 3, Series M, Part II; request that document for detailed rules.",
+      "must_not_claim": "Do not invent missing source content.",
+      "source_verified": true
+    }
+  ]
+}
