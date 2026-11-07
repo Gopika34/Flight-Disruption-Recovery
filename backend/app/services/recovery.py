@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from app.rules.rule_engine import evaluate
 from app.rag.retriever import RetrievalUnavailable, get_clause
-from app.services.airports import distance_km
+from app.services.airports import distance_km, get_airport
 from app.services.flights import (
     FlightDataError, find_alternatives, estimate_block_minutes, now_ist,
 )
@@ -102,31 +102,63 @@ def plan_recovery(facts):
     now = now_ist()
     origin, dest = facts.get("origin"), facts.get("destination")
     if origin and dest and _wants_alternatives(facts["type"], decision, facts):
-        if not AIRLABS_API_KEY:
+
+        # This project currently supports Indian airports only.
+        origin_airport = get_airport(origin)
+        destination_airport = get_airport(dest)
+
+        if not origin_airport or not destination_airport:
             plan["flight_data"] = {
-                "provider": "AirLabs", "status": "not_configured", "coverage_hours": 10,
+                "provider": "AirLabs",
+                "status": "unsupported_route",
+                "coverage_hours": 10,
+                "message": (
+                    "Live alternative search currently supports routes "
+                    "between Indian airports only."
+                ),
+            }
+
+        elif not AIRLABS_API_KEY:
+            plan["flight_data"] = {
+                "provider": "AirLabs",
+                "status": "not_configured",
+                "coverage_hours": 10,
                 "message": "Set AIRLABS_API_KEY to retrieve live flight schedules.",
             }
+
         else:
             try:
                 plan["alternatives"] = find_alternatives(
-                    origin, dest, after=now, exclude_flight=facts.get("flight_number")
+                    origin,
+                    dest,
+                    after=now,
+                    exclude_flight=facts.get("flight_number"),
                 )
+
                 plan["flight_data"] = {
-                    "provider": "AirLabs", "status": "live_data", "coverage_hours": 10,
+                    "provider": "AirLabs",
+                    "status": "live_data",
+                    "coverage_hours": 10,
                     "result_count": len(plan["alternatives"]),
                     "message": (
-                        "Schedules are only available up to 10 hours ahead. "
-                        "Seat inventory and fares are not supplied by this endpoint."
-                        if plan["alternatives"] else
-                        "AirLabs returned no matching schedule records in its available window. "
-                        "This does not prove that no airline alternative exists."
+                        "Live schedules are available only within the "
+                        "provider's supported search window. Fares and "
+                        "seat inventory are not supplied."
+                        if plan["alternatives"]
+                        else
+                        "No matching schedules were returned in the "
+                        "provider's available window. This does not prove "
+                        "that no alternatives exist."
                     ),
                 }
+
             except FlightDataError as error:
                 logger.warning("Live flight lookup failed: %s", error)
+
                 plan["flight_data"] = {
-                    "provider": "AirLabs", "status": "unavailable", "coverage_hours": 10,
+                    "provider": "AirLabs",
+                    "status": "unavailable",
+                    "coverage_hours": 10,
                     "message": str(error),
                 }
 

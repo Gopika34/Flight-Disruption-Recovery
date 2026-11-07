@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://airlabs.co/api/v9"
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# Common Indian airline codes.
+# Unknown codes are displayed as their original IATA code.
+AIRLINE_NAMES = {
+    "AI": "Air India",
+    "IX": "Air India Express",
+    "6E": "IndiGo",
+    "SG": "SpiceJet",
+    "QP": "Akasa Air",
+    "9I": "Alliance Air",
+}
+
+INDIAN_OPERATING_AIRLINES = {
+    "AI",  # Air India
+    "IX",  # Air India Express
+    "6E",  # IndiGo
+    "SG",  # SpiceJet
+    "QP",  # Akasa Air
+    "9I",  # Alliance Air
+}
 
 def now_ist():
     return datetime.now(IST)
@@ -122,33 +141,135 @@ def _to_ist(timestamp, utc_fallback, local_fallback):
     return None
 
 
+# def _normalise_schedule(item):
+#     departure = _to_ist(
+#         item.get("dep_time_ts"),
+#         item.get("dep_time_utc"),
+#         item.get("dep_time"),
+#     )
+
+#     arrival = _to_ist(
+#         item.get("arr_time_ts"),
+#         item.get("arr_time_utc"),
+#         item.get("arr_time"),
+#     )
+
+#     if not departure:
+#         return None
+
+#     flight_number = item.get("flight_iata")
+#     airline_code = item.get("airline_iata")
+
+#     airline_name = AIRLINE_NAMES.get(
+#         airline_code,
+#         airline_code or "Unknown airline",
+#     )
+
+#     if flight_number:
+#         display_name = f"{airline_name} ({flight_number})"
+#     else:
+#         display_name = airline_name
+
+#     return {
+#         "flight_number": flight_number,
+#         "airline": airline_code,
+#         "airline_code": airline_code,
+#         "airline_name": airline_name,
+#         "display_name": display_name,
+
+#         "origin": item.get("dep_iata"),
+#         "destination": item.get("arr_iata"),
+
+#         "departure": departure.isoformat(),
+#         "arrival": arrival.isoformat() if arrival else None,
+
+#         "status": item.get("status") or "unknown",
+#         "delay_minutes": item.get("dep_delayed"),
+#         "duration_minutes": item.get("duration"),
+
+#         "departure_terminal": item.get("dep_terminal"),
+#         "departure_gate": item.get("dep_gate"),
+#         "arrival_terminal": item.get("arr_terminal"),
+#         "arrival_gate": item.get("arr_gate"),
+
+#         "fare_inr": None,
+#         "seats_available": None,
+#         "availability_confirmed": False,
+
+#         "simulated": False,
+#         "provider": "AirLabs",
+#     }
+    
 def _normalise_schedule(item):
-    departure = _to_ist(item.get("dep_time_ts"), item.get("dep_time_utc"), item.get("dep_time"))
-    arrival = _to_ist(item.get("arr_time_ts"), item.get("arr_time_utc"), item.get("arr_time"))
+    departure = _to_ist(
+        item.get("dep_time_ts"),
+        item.get("dep_time_utc"),
+        item.get("dep_time"),
+    )
+
+    arrival = _to_ist(
+        item.get("arr_time_ts"),
+        item.get("arr_time_utc"),
+        item.get("arr_time"),
+    )
+
     if not departure:
         return None
+
+    # AirLabs codeshare fields identify the operating carrier.
+    marketing_code = item.get("airline_iata")
+    marketing_flight = item.get("flight_iata")
+
+    operating_code = (
+        item.get("cs_airline_iata") or marketing_code
+    )
+    operating_flight = (
+        item.get("cs_flight_iata") or marketing_flight
+    )
+
+    airline_name = AIRLINE_NAMES.get(
+        operating_code,
+        operating_code or "Unknown airline",
+    )
+
     return {
-        "flight_number": item.get("flight_iata"),
-        "airline": item.get("airline_iata"),
+        # Actual operating flight
+        "flight_number": operating_flight,
+        "airline": operating_code,
+        "airline_code": operating_code,
+        "airline_name": airline_name,
+        "display_name": (
+            f"{airline_name} ({operating_flight})"
+            if operating_flight else airline_name
+        ),
+
+        # Original marketed flight, retained for traceability
+        "marketing_airline_code": marketing_code,
+        "marketing_flight_number": marketing_flight,
+
         "origin": item.get("dep_iata"),
         "destination": item.get("arr_iata"),
+
         "departure": departure.isoformat(),
         "arrival": arrival.isoformat() if arrival else None,
+
         "status": item.get("status") or "unknown",
         "delay_minutes": item.get("dep_delayed"),
         "duration_minutes": item.get("duration"),
+
         "departure_terminal": item.get("dep_terminal"),
         "departure_gate": item.get("dep_gate"),
         "arrival_terminal": item.get("arr_terminal"),
         "arrival_gate": item.get("arr_gate"),
+
         "fare_inr": None,
         "seats_available": None,
         "availability_confirmed": False,
+
         "simulated": False,
         "provider": "AirLabs",
     }
-
-
+    
 def find_alternatives(origin, destination, after=None, days=0, limit=5, exclude_flight=None, **_ignored):
     """Return live scheduled flights for a route, within AirLabs' 10h horizon.
 
@@ -169,28 +290,84 @@ def find_alternatives(origin, destination, after=None, days=0, limit=5, exclude_
             "dep_iata": origin,
             "arr_iata": destination,
             "limit": min(max(int(limit) * 5, 10), 50),
-            "_fields": "airline_iata,flight_iata,dep_iata,arr_iata,dep_time,dep_time_ts,dep_time_utc,arr_time,arr_time_ts,arr_time_utc,status,dep_delayed,duration,dep_terminal,dep_gate,arr_terminal,arr_gate",
+            "_fields": (
+                "airline_iata,flight_iata,"
+                "cs_airline_iata,cs_flight_iata,cs_flight_number,"
+                "dep_iata,arr_iata,"
+                "dep_time,dep_time_ts,dep_time_utc,"
+                "arr_time,arr_time_ts,arr_time_utc,"
+                "status,dep_delayed,duration,"
+                "dep_terminal,dep_gate,arr_terminal,arr_gate"
+            ),
         })
         records = _records(payload)
         _store(cache_key, records)
 
     options = []
+    seen = set()
+
     for item in records:
         flight = _normalise_schedule(item)
+
         if not flight:
             continue
-        if flight["origin"] != origin or flight["destination"] != destination:
+
+        if (
+            flight["origin"] != origin
+            or flight["destination"] != destination
+        ):
             continue
+
         if flight["status"] not in {"scheduled", "unknown"}:
             continue
+
         if datetime.fromisoformat(flight["departure"]) <= after:
             continue
-        if exclude_flight and (flight["flight_number"] or "").upper() == exclude_flight.upper():
+
+        if exclude_flight and (
+            flight["flight_number"] or ""
+        ).upper() == exclude_flight.upper():
             continue
+
+        # Restrict to the configured Indian operating carriers.
+        if flight["airline_code"] not in INDIAN_OPERATING_AIRLINES:
+            continue
+
+        # Prefer the actual operating flight number for deduplication.
+        operating_flight = flight.get("flight_number")
+
+        if operating_flight:
+            dedupe_key = (
+                origin,
+                destination,
+                operating_flight.upper(),
+                flight["departure"],
+            )
+        else:
+            dedupe_key = (
+                origin,
+                destination,
+                flight["departure"],
+            )
+
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+
         flight["kind"] = "live_schedule"
-        flight["note"] = "Live schedule from AirLabs; seat inventory and fare are not supplied by this endpoint."
+        flight["note"] = (
+            "Live AirLabs schedule. Operating carrier identified where "
+            "codeshare data is supplied. Seat inventory and fares are "
+            "not supplied by this endpoint."
+        )
+
         options.append(flight)
-    return sorted(options, key=lambda item: item["departure"])[:limit]
+
+    return sorted(
+        options,
+        key=lambda item: item["departure"],
+    )[:limit]
 
 
 def get_flight_status(flight_number: str):

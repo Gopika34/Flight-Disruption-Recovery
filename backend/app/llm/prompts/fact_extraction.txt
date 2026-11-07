@@ -45,6 +45,34 @@ Keys:
 - final_arrival_delay_minutes: final destination arrival delay in minutes for a same-ticket connection
 - revised_departure_communicated_more_than_24h: true/false, whether the revised departure time was communicated more than 24 hours before the original scheduled departure
 
+IMPORTANT FACT EXTRACTION RULES:
+
+1. Extract only facts explicitly stated by the passenger or clearly
+   established by previously supplied facts.
+
+2. Never infer the disruption type from the reason.
+   Example: "The airline overbooked the flight" does not automatically
+   mean the passenger was denied boarding.
+
+3. Keep these disruption types distinct:
+   - cancellation: the flight itself was cancelled
+   - delay: the flight operated or was expected to operate late
+   - denied_boarding: this passenger was refused boarding
+   - downgrading: this passenger was placed in a lower class
+
+4. If the passenger only mentions overbooking, do not change the
+   disruption type unless they explicitly say they were refused boarding.
+
+5. If a fact is not known, return null. Never invent a value.
+
+6. Do not guess notice_hours, delay_minutes, fares, flight duration,
+   check-in status, or whether an alternative was accepted.
+
+7. Previously known facts should be preserved unless the passenger
+   explicitly corrects them.
+
+8. Return only valid JSON. Do not include Markdown or explanations.
+
 Facts already known:
 {known}
 

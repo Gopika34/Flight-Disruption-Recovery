@@ -1,12 +1,12 @@
 import json
 import logging
 import re
+
 from app.llm.router import complete, stream_complete
 from app.schemas.scenario import sanitize_facts
 from app.loaders.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
-
 
 EXTRACT_PROMPT = load_prompt("fact_extraction.txt")
 EXPLAIN_PROMPT = load_prompt("passenger_explanation.txt")
@@ -45,11 +45,26 @@ ALLOWED = {
 }
 
 
+class FactTypeConflict(Exception):
+    """Raised when a new message appears to contradict the saved disruption type."""
+
+    def __init__(self, previous_type, proposed_type):
+        self.previous_type = previous_type
+        self.proposed_type = proposed_type
+        super().__init__(
+            f"Conflicting disruption types: {previous_type} and {proposed_type}"
+        )
+
+
 def _json_from(text):
     text = (text or "").strip()
 
-    # Remove optional Markdown code fences.
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"\s*```$", "", text)
 
     data = json.loads(text)
@@ -60,17 +75,35 @@ def _json_from(text):
     return data
 
 
-def _nonempty(text):
-    text = (text or "").strip()
+def _is_explicit_correction(message):
+    """Allow a passenger to deliberately correct an earlier answer."""
+    text = (message or "").lower()
 
-    if not text:
-        raise ValueError("Empty answer.")
+    correction_phrases = (
+        "actually",
+        "i meant",
+        "i mean",
+        "correction",
+        "to correct",
+        "i was mistaken",
+        "that was incorrect",
+        "change it to",
+        "it was not",
+        "it wasn't",
+        "instead it was",
+    )
 
-    return text
+    return any(phrase in text for phrase in correction_phrases)
 
 
 def extract_facts(message, known=None):
-    known = known or {}
+    """
+    Extract facts from one passenger message.
+
+    Existing facts are retained. New valid facts can update old values.
+    A conflicting disruption type requires an explicit correction.
+    """
+    known = dict(known or {})
 
     prompt = EXTRACT_PROMPT.format(
         known=json.dumps(known, default=str),
@@ -84,52 +117,174 @@ def extract_facts(message, known=None):
         validate=_json_from,
     )
 
-    # Ignore keys outside the supported fact schema.
+    if not isinstance(extracted, dict):
+        raise ValueError("Fact extractor did not return a JSON object.")
+
     extracted = {
         key: value
         for key, value in extracted.items()
         if key in ALLOWED and value is not None
     }
 
-    # Drop any value that fails the Scenario schema (e.g. notice_hours="unknown")
-    # so one bad LLM value can't make the next /ask turn fail validation.
     extracted, rejected = sanitize_facts(extracted)
+
     if rejected:
         logger.warning("Discarded invalid extracted facts: %s", rejected)
 
-    # Existing known facts remain available.
-    # New explicitly extracted facts can update them.
+    old_type = known.get("type")
+    new_type = extracted.get("type")
+
+    if (
+        old_type
+        and new_type
+        and old_type != new_type
+        and not _is_explicit_correction(message)
+    ):
+        raise FactTypeConflict(old_type, new_type)
+
     return {**known, **extracted}
 
 
-def explanation_prompt(message, plan, clauses):
-    slim = {
-        "decision": plan["decision"],
-        "alternatives": plan.get("alternatives", [])[:3],
-        "stay": plan.get("stay"),
+def build_explanation(plan):
+    """
+    Build a safe explanation from the deterministic recovery plan.
+
+    No LLM call. No new legal conclusions or compensation amounts.
+    """
+    decision = plan.get("decision", {})
+    status = decision.get("status", "unknown")
+
+    if status != "ok":
+        return (
+            "The recovery engine could not complete the evaluation. "
+            "Please review the missing information or the decision details."
+        )
+
+    parts = [
+        "Your flight disruption details have been evaluated by the "
+        "deterministic recovery rules."
+    ]
+
+    clauses = plan.get("clauses") or []
+    clause_ids = [
+        str(item.get("clause_id"))
+        for item in clauses
+        if item.get("clause_id")
+    ]
+
+    if clause_ids:
+        parts.append(
+            "The supporting DGCA policy references retrieved for this "
+            "evaluation are: " + ", ".join(clause_ids) + "."
+        )
+
+    evidence_status = plan.get("evidence", {}).get("status")
+
+    if evidence_status == "unavailable":
+        parts.append(
+            "The policy database was unavailable, so the supporting policy "
+            "text could not be retrieved. Please treat the result as "
+            "provisional until the evidence is available."
+        )
+    elif evidence_status == "partial":
+        parts.append(
+            "Some policy references could not be retrieved. Review the "
+            "available evidence before relying on this result."
+        )
+
+    alternatives = plan.get("alternatives") or []
+
+    if alternatives:
+        parts.append(
+            f"{len(alternatives)} alternative scheduled flight(s) were "
+            "returned by the live flight data provider. These are schedules, "
+            "not confirmed seat reservations."
+        )
+    else:
+        flight_status = plan.get("flight_data", {}).get("status")
+
+        if flight_status == "live_data":
+            parts.append(
+                "No matching alternative schedules were returned in the "
+                "provider's available search window. This does not prove "
+                "that no alternatives exist."
+            )
+        elif flight_status == "unavailable":
+            parts.append(
+                "Live alternative flight data is temporarily unavailable."
+            )
+        elif flight_status == "not_configured":
+            parts.append(
+                "Live alternative flight search is not configured."
+            )
+
+    stay = plan.get("stay")
+
+    if stay:
+        parts.append(
+            "Accommodation information is included in the recovery plan. "
+            "Live hotel inventory is not currently integrated."
+        )
+
+    parts.append(
+        "Review the decision, assumptions, missing evidence and policy "
+        "references before taking action with the airline."
+    )
+
+    return " ".join(parts)
+
+def explanation_prompt(message, plan):
+    """
+    Prepare a limited, trusted context for the passenger-facing LLM.
+
+    The LLM explains the deterministic decision.
+    It does not calculate or modify passenger rights.
+    """
+
+    decision = plan.get("decision", {})
+
+    context = {
+        "decision": decision,
+        "assumptions": decision.get("assumptions", []),
+        "notes": decision.get("notes", []),
+        "evidence_status": plan.get("evidence", {}).get("status"),
     }
+
+    clauses = plan.get("clauses", []) or []
+    alternatives = plan.get("alternatives", []) or []
 
     return EXPLAIN_PROMPT.format(
         message=message,
-        plan=json.dumps(slim, default=str),
-        clauses=json.dumps(clauses, default=str),
+        decision=json.dumps(context, ensure_ascii=False, default=str),
+        clauses=json.dumps(clauses, ensure_ascii=False, default=str),
+        alternatives=json.dumps(
+            alternatives[:3],
+            ensure_ascii=False,
+            default=str,
+        ),
+        stay=json.dumps(
+            plan.get("stay"),
+            ensure_ascii=False,
+            default=str,
+        ),
+        evidence=json.dumps(
+            plan.get("evidence", {}),
+            ensure_ascii=False,
+            default=str,
+        ),
     )
 
 
-def explain(message, plan, clauses):
-    prompt = explanation_prompt(message, plan, clauses)
+def stream_explain(message, plan):
+    """
+    Stream a passenger-facing explanation.
 
-    return complete(
-        prompt,
-        temperature=0.2,
-        validate=_nonempty,
-    )
+    All compensation and eligibility decisions come from Python.
+    """
 
+    prompt = explanation_prompt(message, plan)
 
-def stream_explain(message, plan, clauses):
-    prompt = explanation_prompt(message, plan, clauses)
-
-    return stream_complete(
+    yield from stream_complete(
         prompt,
         temperature=0.2,
     )
