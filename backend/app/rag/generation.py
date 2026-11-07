@@ -1,83 +1,135 @@
-"""The 'G' in RAG: Gemini turns messy text into facts, and turns the engine's decision into a
-plain-English answer. It never decides amounts: the rule engine does."""
 import json
+import logging
 import re
-from google import genai
-from google.genai import types
-from app.core.config import GEMINI_API_KEY, GEN_MODEL
+from app.llm.router import complete, stream_complete
+from app.schemas.scenario import sanitize_facts
+from app.loaders.prompt_loader import load_prompt
 
-_client = genai.Client(api_key=GEMINI_API_KEY)
+logger = logging.getLogger(__name__)
+
+
+EXTRACT_PROMPT = load_prompt("fact_extraction.txt")
+EXPLAIN_PROMPT = load_prompt("passenger_explanation.txt")
 
 ALLOWED = {
-    "type", "origin", "destination", "flight_number", "reason", "notice_hours", "has_contact_info",
-    "block_time_minutes", "basic_fare", "fuel_charge", "delay_minutes", "checked_in_on_time",
-    "scheduled_departure", "confirmed_booking", "alternate_departure_delay_minutes",
-    "sector", "ticket_amount_including_taxes", "involuntary", "distance_km",
+    "type",
+    "origin",
+    "destination",
+    "flight_number",
+    "reason",
+    "notice_hours",
+    "has_contact_info",
+    "block_time_minutes",
+    "basic_fare",
+    "fuel_charge",
+    "delay_minutes",
+    "total_delay_from_published_minutes",
+    "checked_in_on_time",
+    "scheduled_departure",
+    "confirmed_booking",
+    "alternate_departure_delay_minutes",
+    "sector",
+    "domestic",
+    "ticket_amount_including_taxes",
+    "involuntary",
+    "distance_km",
+    "alternate_flight_offered",
+    "acceptable_alternative_or_refund_provided",
+    "alternate_flight_accepted",
+    "extraordinary_circumstances_established",
+    "overbooking",
+    "voluntary_surrender",
+    "connecting_same_ticket",
+    "final_arrival_delay_minutes",
+    "revised_departure_communicated_more_than_24h",
 }
-
-EXTRACT_PROMPT = """You extract facts about an Indian domestic flight disruption from a passenger's message.
-Return ONLY one JSON object. Use null for anything the passenger did not say. Never guess or invent.
-
-Keys:
-- type: "cancellation" | "delay" | "denied_boarding" | "downgrading"
-- origin, destination: 3-letter IATA codes (Chennai MAA, Delhi DEL, Mumbai BOM, Bengaluru BLR, Hyderabad HYD, Kolkata CCU)
-- flight_number: string like "6E201"
-- reason: one of weather, fog, atc, security, strike, natural_disaster, technical, crew, operational, unknown
-- notice_hours: number, how many hours BEFORE departure the passenger was told about a cancellation
-- has_contact_info: true/false, whether the passenger had given the airline/agent contact details
-- block_time_minutes: scheduled flight duration in minutes
-- basic_fare, fuel_charge: numbers in INR (basic fare and fuel charge, NOT taxes)
-- delay_minutes: number, total delay of departure
-- checked_in_on_time: true/false
-- scheduled_departure: "HH:MM" 24-hour
-- confirmed_booking: true/false
-- alternate_departure_delay_minutes: for denied boarding, delay of the replacement flight
-- sector: "domestic" | "international"
-- ticket_amount_including_taxes: number INR (for downgrading)
-- involuntary: true/false (was the downgrade forced by the airline)
-- distance_km: number
-
-Facts already known (keep them unless the passenger corrects them): {known}
-Passenger message: {message}"""
-
-EXPLAIN_PROMPT = """You are an assistant explaining air-passenger rights under DGCA CAR Section 3 Series M Part IV.
-Write a short, friendly answer for the passenger using ONLY the decision JSON and the clause texts below.
-Rules:
-- Never invent amounts or rules. Quote amounts exactly as they appear in the decision.
-- Cite clause numbers in square brackets, like [3.4.1].
-- Mention each assumption in plain words.
-- Mention the alternative flights and hotel only if they are present in the decision data.
-- Say the cause of disruption is the airline's stated reason when assumptions say so.
-- End with: "This is guidance based on the CAR text, not legal advice."
-- Max 180 words.
-
-Passenger message: {message}
-Decision and tools output: {plan}
-Clause texts: {clauses}"""
 
 
 def _json_from(text):
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
-    return json.loads(text)
+    text = (text or "").strip()
+
+    # Remove optional Markdown code fences.
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+
+    data = json.loads(text)
+
+    if not isinstance(data, dict):
+        raise ValueError("Expected a JSON object.")
+
+    return data
+
+
+def _nonempty(text):
+    text = (text or "").strip()
+
+    if not text:
+        raise ValueError("Empty answer.")
+
+    return text
 
 
 def extract_facts(message, known=None):
     known = known or {}
-    prompt = EXTRACT_PROMPT.format(known=json.dumps(known), message=message)
-    resp = _client.models.generate_content(
-        model=GEN_MODEL, contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0))
-    new = _json_from(resp.text)
-    new = {k: v for k, v in new.items() if k in ALLOWED and v is not None}
-    return {**known, **new}                         # newest answer wins, nothing known is lost
+
+    prompt = EXTRACT_PROMPT.format(
+        known=json.dumps(known, default=str),
+        message=message,
+    )
+
+    extracted = complete(
+        prompt,
+        json_mode=True,
+        temperature=0,
+        validate=_json_from,
+    )
+
+    # Ignore keys outside the supported fact schema.
+    extracted = {
+        key: value
+        for key, value in extracted.items()
+        if key in ALLOWED and value is not None
+    }
+
+    # Drop any value that fails the Scenario schema (e.g. notice_hours="unknown")
+    # so one bad LLM value can't make the next /ask turn fail validation.
+    extracted, rejected = sanitize_facts(extracted)
+    if rejected:
+        logger.warning("Discarded invalid extracted facts: %s", rejected)
+
+    # Existing known facts remain available.
+    # New explicitly extracted facts can update them.
+    return {**known, **extracted}
+
+
+def explanation_prompt(message, plan, clauses):
+    slim = {
+        "decision": plan["decision"],
+        "alternatives": plan.get("alternatives", [])[:3],
+        "stay": plan.get("stay"),
+    }
+
+    return EXPLAIN_PROMPT.format(
+        message=message,
+        plan=json.dumps(slim, default=str),
+        clauses=json.dumps(clauses, default=str),
+    )
 
 
 def explain(message, plan, clauses):
-    slim = {"decision": plan["decision"], "alternatives": plan["alternatives"][:3], "stay": plan["stay"]}
-    prompt = EXPLAIN_PROMPT.format(message=message,
-                                   plan=json.dumps(slim, default=str),
-                                   clauses=json.dumps(clauses))
-    resp = _client.models.generate_content(
-        model=GEN_MODEL, contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.2))
-    return resp.text.strip()
+    prompt = explanation_prompt(message, plan, clauses)
+
+    return complete(
+        prompt,
+        temperature=0.2,
+        validate=_nonempty,
+    )
+
+
+def stream_explain(message, plan, clauses):
+    prompt = explanation_prompt(message, plan, clauses)
+
+    return stream_complete(
+        prompt,
+        temperature=0.2,
+    )

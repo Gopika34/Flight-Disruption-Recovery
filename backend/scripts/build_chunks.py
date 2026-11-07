@@ -1,29 +1,56 @@
 import json
+import sys
 from app.core.config import PDF_PATH, CHUNKS_PATH
 from app.loaders.pdf_loader import load_pdf_pages
 from app.rag.chunking import build_clause_chunks
+from app.rag.validation import validate_chunks
 
-pages = load_pdf_pages(PDF_PATH)
-print(f"Loaded {len(pages)} pages")
 
-chunks = build_clause_chunks(pages)
-print(f"Built {len(chunks)} clause chunks\n")
+def main():
+    print("Loading DGCA policy PDF...")
 
-for c in chunks:
-    print(f"{c['clause_id']:<8} p{c['page_start']}-{c['page_end']}  "
-          f"{c['section_title'][:22]:<22} {c['text'][:60]}")
+    pages = load_pdf_pages(PDF_PATH)
+    print(f"Loaded {len(pages)} pages")
 
-EXPECTED = (
-    [f"1.{i}" for i in range(1, 8)] + [f"2.{i}" for i in range(1, 11)]
-    + ["3.1.1", "3.1.2", "3.1.3", "3.2.1", "3.2.2", "3.2.3"]
-    + [f"3.3.{i}" for i in range(1, 6)] + [f"3.4.{i}" for i in range(1, 6)]
-    + ["3.5.1", "3.6.1", "3.7.1", "3.8.1", "3.8.2", "3.9.1", "3.9.2", "3.9.3"]
-    + [f"3.10.{i}" for i in range(1, 7)]
-)
+    print("\nExtracting policy clauses...")
 
-found = [c["clause_id"] for c in chunks]
-print("\nMissing:   ", [e for e in EXPECTED if e not in found] or "none")
-print("Unexpected:", [f for f in found if f not in EXPECTED] or "none")
+    chunks = build_clause_chunks(pages)
+    print(f"Built {len(chunks)} chunks")
 
-CHUNKS_PATH.write_text(json.dumps(chunks, indent=2, ensure_ascii=False), encoding="utf-8")
-print(f"Saved to {CHUNKS_PATH}")
+    print("\nRunning validation...")
+
+    errors = validate_chunks(chunks, len(pages))
+
+    if errors:
+        print("\nVALIDATION FAILED")
+
+        for error in errors:
+            print(f" - {error}")
+
+        print("\nExisting JSON was not modified.")
+        sys.exit(1)
+
+    print("\nVALIDATION PASSED")
+
+    for chunk in chunks:
+        print(
+            f"{chunk['clause_id']:<8} "
+            f"p{chunk['page_start']}-{chunk['page_end']} "
+            f"{chunk['section_title']}"
+        )
+
+    temp_path = CHUNKS_PATH.with_suffix(".tmp")
+
+    temp_path.write_text(
+        json.dumps(chunks, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    temp_path.replace(CHUNKS_PATH)
+
+    print(f"\nSaved {len(chunks)} validated chunks.")
+    print(f"Output: {CHUNKS_PATH}")
+
+
+if __name__ == "__main__":
+    main()
