@@ -17,6 +17,8 @@ from app.core.config import (
     GEMINI_API_KEY,
     AIRLABS_API_KEY,
     RATE_LIMIT_PER_MINUTE,
+    TRUSTED_PROXY_COUNT,
+    IS_PRODUCTION,
     validate_production_config,
 )
 from app.rag.retriever import (
@@ -40,6 +42,11 @@ if not logging.getLogger().handlers:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
+# httpx logs every request URL at INFO, and AirLabs needs api_key in the query
+# string. Keep these loggers quiet so the key never reaches the logs.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+    
 logger = logging.getLogger(__name__)
 
 
@@ -78,35 +85,60 @@ app.add_middleware(
 # RATE LIMITING (per client IP, in memory, per worker)
 # --------------------------------------------------
 
-_hits = defaultdict(deque)
+_hits: dict[str, deque] = {}
+_last_sweep = 0.0
+_WINDOW_S = 60
+_MAX_TRACKED_IPS = 10000
+
+
+def client_ip(conn) -> str:
+    """Real client address for a Request or WebSocket.
+
+    X-Forwarded-For is client-controlled on its left side, so it is only read
+    when TRUSTED_PROXY_COUNT > 0, and then we take the hop appended by OUR
+    outermost proxy (counted from the right), never the first value.
+    """
+    peer = conn.client.host if conn.client else "unknown"
+    if TRUSTED_PROXY_COUNT <= 0:
+        return peer
+    hops = [h.strip() for h in conn.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+    if len(hops) >= TRUSTED_PROXY_COUNT:
+        return hops[-TRUSTED_PROXY_COUNT]
+    return peer
+
+
+def _sweep(now):
+    """Drop idle IPs so memory stays bounded."""
+    global _last_sweep
+    if now - _last_sweep < _WINDOW_S and len(_hits) <= _MAX_TRACKED_IPS:
+        return
+    _last_sweep = now
+    for key in [k for k, v in _hits.items() if not v or now - v[-1] > _WINDOW_S]:
+        del _hits[key]
+
+
+def allow_request(ip: str) -> bool:
+    if RATE_LIMIT_PER_MINUTE <= 0:
+        return True
+    now = time.monotonic()
+    _sweep(now)
+    window = _hits.setdefault(ip, deque())
+    while window and now - window[0] > _WINDOW_S:
+        window.popleft()
+    if len(window) >= RATE_LIMIT_PER_MINUTE:
+        return False
+    window.append(now)
+    return True
 
 
 def rate_limit(request: Request):
-    """Protect the expensive endpoints (LLM + vector search)."""
-    if RATE_LIMIT_PER_MINUTE <= 0:
-        return
-
-    forwarded = request.headers.get("x-forwarded-for", "")
-    ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
-
-    now = time.monotonic()
-    window = _hits[ip]
-    while window and now - window[0] > 60:
-        window.popleft()
-
-    if len(window) >= RATE_LIMIT_PER_MINUTE:
+    """Protect the expensive endpoints (LLM + vector search + AirLabs)."""
+    if not allow_request(client_ip(request)):
         raise HTTPException(
             status_code=429,
             detail="Too many requests. Please wait a minute and try again.",
-            headers={"Retry-After": "60"},
+            headers={"Retry-After": str(_WINDOW_S)},
         )
-
-    window.append(now)
-
-    if len(_hits) > 10000:            # keep memory bounded
-        for key in [k for k, v in _hits.items() if not v]:
-            del _hits[key]
-
 
 # --------------------------------------------------
 # ROOT / HEALTH
@@ -285,146 +317,11 @@ def recover(scenario: Scenario):
         )
 
 
+
 # --------------------------------------------------
 # NATURAL LANGUAGE PASSENGER INTERFACE
 # --------------------------------------------------
 
-# @app.post("/ask", tags=["AI Assistant"], dependencies=[Depends(rate_limit)])
-# def ask(body: AskIn):
-#     """
-#     Passenger message -> fact extraction -> rule engine
-#     -> policy-grounded explanation.
-    
-#     MongoDB-backed: session_id loads and saves facts between turns.
-#     """
-
-#     # 1. Load saved facts, then let the caller's supplied facts take precedence
-#     # so a passenger can explicitly correct an earlier answer.
-#     session_id = body.session_id or str(uuid4())
-#     try:
-#         saved_facts = load_facts(session_id)
-#         prior_facts = {**saved_facts, **body.known_facts}
-#         facts = generation.extract_facts(body.message, prior_facts)
-#         save_facts(session_id, facts)
-#     except RuntimeError:
-#         logger.exception("Passenger session storage failed")
-#         raise HTTPException(status_code=503, detail="Conversation storage is temporarily unavailable. Please retry.")
-
-#     except Exception:
-#         logger.exception("Passenger fact extraction failed")
-
-#         raise HTTPException(
-#             status_code=502,
-#             detail={
-#                 "error": "llm_service_unavailable",
-#                 "message": (
-#                     "All configured language models failed "
-#                     "to extract passenger information."
-#                 ),
-#             },
-#         )
-
-#     # 2. Check whether the disruption type is known.
-#     if not facts.get("type"):
-#         missing = ["type"]
-
-#         return {
-#             "status": "needs_more_info",
-#             "session_id": session_id,
-#             "known_facts": facts,
-#             "missing_facts": missing,
-#             "questions": questions_for(missing),
-#         }
-
-#     # 3. Calculate recovery decision using Python rules.
-#     try:
-#         plan = plan_recovery(facts)
-
-#     except ValueError as error:
-#         raise HTTPException(
-#             status_code=422,
-#             detail=str(error),
-#         )
-
-#     except Exception:
-#         logger.exception("Passenger recovery calculation failed")
-
-#         raise HTTPException(
-#             status_code=500,
-#             detail="Could not calculate the recovery decision.",
-#         )
-
-#     # 4. Ask for missing facts before generating explanation.
-    
-#     decision = plan["decision"]
-
-#     if decision["status"] == "needs_more_info":
-#         missing = decision["missing_facts"]
-
-#         return {
-#             "status": "needs_more_info",
-#             "session_id": session_id,
-#             "known_facts": facts,
-#             "missing_facts": missing,
-#             "questions": questions_for(missing),
-#         }
-
-#     if decision["status"] != "ok":
-#         return {
-#             "status": decision["status"],
-#             "session_id": session_id,
-#             "known_facts": facts,
-#             "decision": decision,
-#             "message": (
-#                 "I cannot reliably determine your eligibility "
-#                 "with the information currently available."
-#             ),
-#         }
-
-
-#     # 5. Explain the deterministic decision using the LLM router,
-#     #    but only claim a policy-grounded explanation if the clause
-#     #    text was actually retrieved.
-#     evidence = plan.get("evidence", {})
-#     explanation = None
-
-#     if evidence.get("status") == "unavailable":
-#         plan["evidence_warning"] = (
-#             "The calculation below is complete, but the supporting policy text "
-#             "could not be retrieved right now, so no policy-grounded explanation "
-#             "is provided."
-#         )
-#     else:
-#         try:
-#             explanation = generation.explain(
-#                 body.message,
-#                 plan,
-#                 plan["clauses"],
-#             )
-
-#         except Exception:
-#             logger.exception("LLM explanation generation failed")
-
-#             plan["explanation_error"] = (
-#                 "The recovery decision was generated, "
-#                 "but the language model explanation is unavailable."
-#             )
-
-#         if evidence.get("status") == "partial":
-#             plan["evidence_warning"] = (
-#                 "Some cited policy clauses could not be found, so the explanation "
-#                 "covers only the clauses that were retrieved."
-#             )
-
-#     # 6. Return final response.
-#     return {
-#         "status": "ok",
-#         "session_id": session_id,
-#         "known_facts": facts,
-#         "explanation": explanation,
-#         "policy_grounded": evidence.get("status") == "ok" and explanation is not None,
-#         **plan,
-#     }
 
 @app.post("/ask", tags=["AI Assistant"], dependencies=[Depends(rate_limit)])
 def ask(body: AskIn):
@@ -569,10 +466,11 @@ def ask(body: AskIn):
 
     # 8. Return the complete response.
     return {
-        "status": "ok",
+       "status": "ok",
         "session_id": session_id,
         "known_facts": facts,
         "explanation": explanation,
+        "entitlement": generation.entitlement_payload(decision),
         "explanation_mode": "deterministic",
         "policy_grounded": evidence_status == "ok",
         **plan,
@@ -733,10 +631,36 @@ async def ask_stream(body: AskIn):
                 )
                 return
 
-            # 7. Generate the LLM explanation.
-            #
-            # No facts, decision JSON, clauses, or alternatives
-            # are sent as separate SSE events.
+            evidence_status = plan.get("evidence", {}).get("status")
+
+            # 7. Python-computed result goes out FIRST, so the passenger always
+            # sees verified amounts regardless of what the LLM writes next.
+            yield _sse_event(
+                "result",
+                {
+                    "entitlement": generation.entitlement_payload(decision),
+                    "summary": generation.entitlement_summary(decision),
+                    "policy_grounded": evidence_status == "ok",
+                },
+            )
+
+            # 8. Only let the LLM talk when the cited clause text was retrieved.
+            # Otherwise send the deterministic explanation instead.
+            if evidence_status != "ok":
+                yield _sse_event(
+                    "token",
+                    {"text": generation.build_explanation(plan)},
+                )
+                yield _sse_event(
+                    "done",
+                    {
+                        "session_id": session_id,
+                        "status": "ok",
+                        "explanation_mode": "deterministic",
+                        "policy_grounded": False,
+                    },
+                )
+                return
 
             iterator = iter(
                 generation.stream_explain(
@@ -772,12 +696,14 @@ async def ask_stream(body: AskIn):
                     "The language model returned an empty explanation."
                 )
 
-            # 8. Finish.
+            # 9. Finish.
             yield _sse_event(
                 "done",
                 {
                     "session_id": session_id,
                     "status": "ok",
+                    "explanation_mode": "llm",
+                    "policy_grounded": True,
                 },
             )
 
@@ -846,11 +772,21 @@ async def simulate(ws: WebSocket):
     4. stay_arranged
     5. complete
     """
+    # Browsers always send Origin; only allow the configured frontends. A
+    # missing Origin (non-browser client) is tolerated in development only.
+    origin = ws.headers.get("origin")
+    if origin is None:
+        origin_ok = not IS_PRODUCTION
+    else:
+        origin_ok = origin in CORS_ORIGINS
+    if not origin_ok or not allow_request(client_ip(ws)):
+        await ws.close(code=1008)          # policy violation
+        return
 
     await ws.accept()
 
     try:
-        payload = await ws.receive_json()
+        payload = await asyncio.wait_for(ws.receive_json(), timeout=15)
 
         scenario = Scenario(**payload)
 
@@ -896,6 +832,9 @@ async def simulate(ws: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+
+    except asyncio.TimeoutError:
+        logger.info("WebSocket client sent nothing in time")
 
     except (ValidationError, ValueError) as error:
         await ws.send_json({

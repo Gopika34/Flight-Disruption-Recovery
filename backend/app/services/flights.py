@@ -141,65 +141,6 @@ def _to_ist(timestamp, utc_fallback, local_fallback):
     return None
 
 
-# def _normalise_schedule(item):
-#     departure = _to_ist(
-#         item.get("dep_time_ts"),
-#         item.get("dep_time_utc"),
-#         item.get("dep_time"),
-#     )
-
-#     arrival = _to_ist(
-#         item.get("arr_time_ts"),
-#         item.get("arr_time_utc"),
-#         item.get("arr_time"),
-#     )
-
-#     if not departure:
-#         return None
-
-#     flight_number = item.get("flight_iata")
-#     airline_code = item.get("airline_iata")
-
-#     airline_name = AIRLINE_NAMES.get(
-#         airline_code,
-#         airline_code or "Unknown airline",
-#     )
-
-#     if flight_number:
-#         display_name = f"{airline_name} ({flight_number})"
-#     else:
-#         display_name = airline_name
-
-#     return {
-#         "flight_number": flight_number,
-#         "airline": airline_code,
-#         "airline_code": airline_code,
-#         "airline_name": airline_name,
-#         "display_name": display_name,
-
-#         "origin": item.get("dep_iata"),
-#         "destination": item.get("arr_iata"),
-
-#         "departure": departure.isoformat(),
-#         "arrival": arrival.isoformat() if arrival else None,
-
-#         "status": item.get("status") or "unknown",
-#         "delay_minutes": item.get("dep_delayed"),
-#         "duration_minutes": item.get("duration"),
-
-#         "departure_terminal": item.get("dep_terminal"),
-#         "departure_gate": item.get("dep_gate"),
-#         "arrival_terminal": item.get("arr_terminal"),
-#         "arrival_gate": item.get("arr_gate"),
-
-#         "fare_inr": None,
-#         "seats_available": None,
-#         "availability_confirmed": False,
-
-#         "simulated": False,
-#         "provider": "AirLabs",
-#     }
-    
 def _normalise_schedule(item):
     departure = _to_ist(
         item.get("dep_time_ts"),

@@ -125,12 +125,20 @@ def evaluate_cancellation(f):
         return r
 
     reason = normalize_reason(f.get("reason"))
-    if reason in (None, "unknown") or not is_known_reason(reason):
+    if reason is None:
         return _needs_info(r, ["reason"])
+    if reason == "unknown" or not is_known_reason(reason):
+        return _cannot_determine(
+            r,
+            "The airline has not supplied a recognized disruption reason. The engine will not assume the cause is ordinary or extraordinary; request the airline's written reason and supporting records.",
+        )
 
     exemption = _extraordinary_exemption(f)
     if is_extraordinary(reason) and exemption is None:
-        return _needs_info(r, ["extraordinary_circumstances_established"])
+        return _cannot_determine(
+            r,
+            "The airline-stated extraordinary cause has not been verified against the DGCA test. A passenger cannot establish this legal exception from personal knowledge alone; request the airline's supporting evidence before determining compensation.",
+        )
     if exemption is True:
         r["compensation"] = 0
         r["alt_or_refund"] = True
@@ -302,17 +310,29 @@ def evaluate_delay(f):
 
     alt_due = False
     if f["domestic"] and delay > 360:
-        if f.get("revised_departure_communicated_more_than_24h") is None:
-            return _needs_info(r, ["revised_departure_communicated_more_than_24h"])
-        # delay_minutes must be measured from the qualifying revised time when
-        # this flag is true; otherwise it is measured from published schedule.
+        # delay_minutes is supplied as the applicable legal baseline by the
+        # fact extractor; total_delay_from_published_minutes remains separate
+        # for hotel eligibility.
         alt_due = True
 
-    if reason in (None, "unknown") or not is_known_reason(reason):
+    # A reason is only material when a threshold benefit may be due. For a
+    # short delay with no meal/hotel/alternate entitlement, do not ask an
+    # irrelevant question. Unknown causes never become ordinary by default.
+    benefit_may_be_due = meals_due or hotel_due or alt_due
+    if benefit_may_be_due and reason is None:
         return _needs_info(r, ["reason"])
+    if benefit_may_be_due and (reason == "unknown" or not is_known_reason(reason)):
+        return _cannot_determine(
+            r,
+            "The airline has not supplied a recognized disruption reason. The engine will not assume the cause is ordinary or extraordinary; request the airline's written reason and supporting records.",
+        )
+
     exemption = _extraordinary_exemption(f)
-    if is_extraordinary(reason) and exemption is None:
-        return _needs_info(r, ["extraordinary_circumstances_established"])
+    if benefit_may_be_due and is_extraordinary(reason) and exemption is None:
+        return _cannot_determine(
+            r,
+            "The airline-stated extraordinary cause has not been verified against the DGCA test. A passenger cannot establish this legal exception from personal knowledge alone; request the airline's supporting evidence before determining facilities.",
+        )
 
     exempt = exemption is True
     r["meals"] = bool(meals_due and not exempt)

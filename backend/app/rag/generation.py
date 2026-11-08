@@ -145,6 +145,42 @@ def extract_facts(message, known=None):
     return {**known, **extracted}
 
 
+def _inr(amount):
+    amount = float(amount)
+    return f"INR {amount:,.0f}" if amount == int(amount) else f"INR {amount:,.2f}"
+
+
+def entitlement_summary(decision):
+    """Passenger-facing lines built ONLY from the Python decision (no LLM)."""
+    lines = []
+    comp = decision.get("compensation")
+    if comp is not None:
+        lines.append(
+            f"Compensation: {_inr(comp)}." if comp > 0
+            else "Compensation: no financial compensation is payable on these facts."
+        )
+    if decision.get("refund") == "full_ticket_refund":
+        lines.append("Refund: you are entitled to a full ticket refund.")
+    if decision.get("alt_or_refund"):
+        lines.append("Alternate flight or refund: the airline must offer you an alternate flight or a refund.")
+    if decision.get("meals") is True:
+        lines.append("Meals and refreshments: the airline must provide these while you wait.")
+    elif decision.get("meals") is False:
+        lines.append("Meals and refreshments: not owed on these facts.")
+    if decision.get("hotel") is True:
+        lines.append("Hotel accommodation: the airline must provide this, with transfers.")
+    elif decision.get("hotel") is False:
+        lines.append("Hotel accommodation: not owed on these facts.")
+    return lines
+
+
+def entitlement_payload(decision):
+    """Structured amounts for API/SSE clients, straight from the rule engine."""
+    return {
+        k: decision.get(k)
+        for k in ("type", "status", "compensation", "refund", "meals", "hotel", "alt_or_refund")
+    }
+
 def build_explanation(plan):
     """
     Build a safe explanation from the deterministic recovery plan.
@@ -164,6 +200,8 @@ def build_explanation(plan):
         "Your flight disruption details have been evaluated by the "
         "deterministic recovery rules."
     ]
+    
+    parts.extend(entitlement_summary(decision))
 
     clauses = plan.get("clauses") or []
     clause_ids = [

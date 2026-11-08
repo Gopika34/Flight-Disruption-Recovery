@@ -29,7 +29,6 @@ class Scenario(BaseModel):
     checked_in_on_time: bool | None = None
     scheduled_departure: str | None = None
     domestic: bool | None = None
-    revised_departure_communicated_more_than_24h: bool | None = None
 
     confirmed_booking: bool | None = None
     overbooking: bool | None = None

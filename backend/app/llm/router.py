@@ -327,7 +327,7 @@ def _mark_success(label):
         _last_errors.pop(label, None)
 
 
-def provider_status():
+def provider_status(detailed=False):
 
     now = time.monotonic()
 

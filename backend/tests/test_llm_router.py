@@ -28,8 +28,10 @@ def test_failed_provider_is_skipped_next_time(monkeypatch):
     def a(*x):
         calls.append(1); raise RuntimeError("slow")
     fake_chain(monkeypatch, ("a", a), ("b", lambda p, j, t: "ok"))
-    router.complete("1"); router.complete("2")
-    assert len(calls) == 1                      # second request skipped the cooling provider
+    router.complete("1")
+    after_first = len(calls)                    # includes the retry attempts on the first request
+    router.complete("2")
+    assert len(calls) == after_first            # second request skipped the cooling provider
 
 
 def test_bad_json_moves_on_without_cooldown(monkeypatch):

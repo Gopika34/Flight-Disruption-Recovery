@@ -17,8 +17,9 @@ QUESTIONS = {
     "acceptable_alternative_or_refund_provided": "Because you received at least 24 hours notice, did the airline actually provide either an alternative flight or a refund acceptable to you?",
     "alternate_flight_accepted": "Did you accept the alternative flight the airline offered?",
     "extraordinary_circumstances_established": (
-        "Has documentary evidence established that the event was beyond the airline's control "
-        "and could not have been avoided even if all reasonable measures had been taken?"
+        "Did the airline show you any official notice or document (for example an ATC, weather or "
+        "security notice) proving the cause was outside its control? If they only told you so, or you "
+        "are not sure, answer no."
     ),
     "overbooking": "Were more passengers with confirmed bookings checked in than there were available seats?",
     "voluntary_surrender": "Did you voluntarily give up your seat, or did the airline refuse to board you against your will?",

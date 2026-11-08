@@ -19,6 +19,8 @@ def _bool(name: str, default: bool) -> bool:
 
 # "production" turns on strict startup checks and hides /docs by default.
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+if ENVIRONMENT not in {"development", "dev", "test", "staging", "production"}:
+    raise ValueError("ENVIRONMENT must be development, dev, test, staging, or production")
 IS_PRODUCTION = ENVIRONMENT == "production"
 
 MONGO_URI = os.getenv("MONGO_URI")
@@ -83,6 +85,10 @@ CORS_ORIGINS = _list(
 
 # Public API protection (per client IP, per minute, per worker process).
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+# How many reverse proxies sit in front of the app (Render/Railway = 1, none = 0).
+# Only that many trailing X-Forwarded-For hops are trusted; extra values the
+# client adds on the left are ignored, so the header cannot be used to dodge limits.
+TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "0"))
 
 # Swagger/OpenAPI docs: on in development, off in production unless enabled.
 ENABLE_DOCS = _bool("ENABLE_DOCS", not IS_PRODUCTION)
@@ -102,6 +108,26 @@ def config_problems() -> list[str]:
         problems.append("CORS_ORIGINS must not contain '*'")
     if not CORS_ORIGINS:
         problems.append("CORS_ORIGINS is empty: set it to your frontend URL")
+    if MONGO_TIMEOUT_MS <= 0:
+        problems.append("MONGO_TIMEOUT_MS must be positive")
+    if SESSION_TTL_DAYS < 1:
+        problems.append("SESSION_TTL_DAYS must be at least 1")
+    if EMBED_DIMS <= 0 or EMBED_BATCH_SIZE <= 0 or EMBED_RETRIES < 1:
+        problems.append("Embedding dimensions/batch size must be positive and retries at least 1")
+    if LLM_TIMEOUT_S <= 0 or LLM_RETRIES < 1 or LLM_RETRY_BASE_S < 0 or LLM_COOLDOWN_S < 0:
+        problems.append("LLM timeout/retry/cooldown settings are invalid")
+    if FLIGHT_API_TIMEOUT_S <= 0 or FLIGHT_API_CACHE_TTL_S < 0:
+        problems.append("Flight API timeout/cache settings are invalid")
+    if RATE_LIMIT_PER_MINUTE < 0:
+        problems.append("RATE_LIMIT_PER_MINUTE cannot be negative")
+    allowed = {"gemini", "groq", "mistral"}
+    if not LLM_ORDER:
+        problems.append("LLM_ORDER must include at least one configured provider")
+    if "gemini" in [provider.lower() for provider in LLM_ORDER] and not GEMINI_MODELS:
+        problems.append("GEMINI_MODELS must contain at least one model when Gemini is enabled")
+    unknown = [provider for provider in LLM_ORDER if provider.lower() not in allowed]
+    if unknown:
+        problems.append("LLM_ORDER contains unsupported provider(s): " + ", ".join(unknown))
 
     return problems
 

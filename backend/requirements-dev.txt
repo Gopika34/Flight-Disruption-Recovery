@@ -1,4 +1,8 @@
 -r requirements.txt
 
 # Tests
-pytest>=8.0.0
+pytest==9.2.0
+
+# One-off ingestion scripts only (scripts/build_chunks.py, ingest_policies.py);
+# the running API never imports PyMuPDF.
+pymupdf==2.0
