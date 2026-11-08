@@ -209,16 +209,16 @@ def test_reason_never_given_is_asked_only_when_absent():
 
 
 @pytest.mark.parametrize("reason", ["unknown", "bird_strike"])
-def test_unknown_or_unlisted_reason_does_not_loop(reason):
-    """Once the passenger has answered, the engine must move on (no endless re-asking)."""
+def test_unknown_or_unlisted_reason_is_not_assumed_ordinary(reason):
+    """An unrecognized cause must not silently produce a legal entitlement calculation."""
     result = evaluate({
         "type": "cancellation", "notice_hours": 2, "has_contact_info": True,
         "reason": reason, "alternate_flight_offered": False,
         "block_time_minutes": 120, "basic_fare": 3000, "fuel_charge": 400,
     })
-    assert result["status"] == "ok"
-    assert result["compensation"] == 3400
-    assert any("not extraordinary" in a for a in result["assumptions"])
+    assert result["status"] == "unable_to_determine"
+    assert result["compensation"] is None
+    assert "supporting records" in result["notes"][0]
 
 
 def test_delay_too_short_for_any_entitlement_does_not_ask_reason():
@@ -231,11 +231,13 @@ def test_delay_too_short_for_any_entitlement_does_not_ask_reason():
     assert result["meals"] is False and result["hotel"] is False
 
 
-def test_denied_boarding_questions_are_batched():
+def test_denied_boarding_questions_are_batched_only_when_independent():
     first = evaluate({"type": "denied_boarding"})
     assert first["missing_facts"] == ["confirmed_booking", "checked_in_on_time"]
     second = evaluate({"type": "denied_boarding", "confirmed_booking": True, "checked_in_on_time": True})
-    assert second["missing_facts"] == ["voluntary_surrender", "overbooking", "connecting_same_ticket"]
+    # These are deliberately sequential: overbooking/connection questions only
+    # make sense after the passenger confirms they did not surrender voluntarily.
+    assert second["missing_facts"] == ["voluntary_surrender"]
 
 
 def test_cancellation_conflicting_alternate_facts_do_not_calculate():

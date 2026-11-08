@@ -122,7 +122,12 @@ def allow_request(ip: str) -> bool:
         return True
     now = time.monotonic()
     _sweep(now)
-    window = _hits.setdefault(ip, deque())
+    window = _hits.get(ip)
+    if window is None:
+        if len(_hits) >= _MAX_TRACKED_IPS:
+            # Do not grow the in-memory limiter without bound under IP churn.
+            return False
+        window = _hits[ip] = deque()
     while window and now - window[0] > _WINDOW_S:
         window.popleft()
     if len(window) >= RATE_LIMIT_PER_MINUTE:
@@ -177,7 +182,7 @@ def health_ready(response: Response):
         checks["gemini_key_configured"]
         and checks["database"] == "ok"
         and checks["vector_index"] == "ready"
-        and checks["airlabs_key_configured"]
+        # AirLabs is optional; it only powers live flight information.
     )
     if not ready:
         response.status_code = 503
@@ -743,6 +748,13 @@ async def ask_stream(body: AskIn):
                         "I could not generate your explanation right now. "
                         "Please try again."
                     )
+                },
+            )
+            yield _sse_event(
+                "done",
+                {
+                    "session_id": session_id,
+                    "status": "error",
                 },
             )
 

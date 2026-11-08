@@ -135,10 +135,7 @@ def evaluate_cancellation(f):
 
     exemption = _extraordinary_exemption(f)
     if is_extraordinary(reason) and exemption is None:
-        return _cannot_determine(
-            r,
-            "The airline-stated extraordinary cause has not been verified against the DGCA test. A passenger cannot establish this legal exception from personal knowledge alone; request the airline's supporting evidence before determining compensation.",
-        )
+        return _needs_info(r, ["extraordinary_circumstances_established"])
     if exemption is True:
         r["compensation"] = 0
         r["alt_or_refund"] = True
@@ -205,9 +202,13 @@ def evaluate_cancellation(f):
 # ---------- Denied boarding (3.2) ----------
 def evaluate_denied_boarding(f):
     r = _result("denied_boarding", ["2.6", "3.2.1", "3.2.2", "3.2.3"])
-    for key in ("confirmed_booking", "checked_in_on_time"):
-        if f.get(key) is None:
-            return _needs_info(r, [key])
+    # These two eligibility facts are independent, so collect them together.
+    missing_prerequisites = [
+        key for key in ("confirmed_booking", "checked_in_on_time")
+        if f.get(key) is None
+    ]
+    if missing_prerequisites:
+        return _needs_info(r, missing_prerequisites)
     if not f["confirmed_booking"] or not f["checked_in_on_time"]:
         r["compensation"] = 0
         r["notes"].append(
