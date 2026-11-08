@@ -4,6 +4,9 @@
 .env.*
 !.env.example
 
+# Python package marker files
+__init__.py
+
 # Python
 __pycache__/
 *.py[cod]
