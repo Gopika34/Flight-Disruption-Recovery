@@ -1,0 +1,6 @@
+{
+  "name": "FlightGuard — Flight Disruption Recovery",
+  "description": "Intelligent flight disruption recovery platform powered by official DGCA passenger rights regulations and real-time live flight feeds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
