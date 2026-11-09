@@ -11,6 +11,10 @@ import {
 
 import { Button } from '../ui/button';
 import { useSession } from '../../context/SessionContext';
+import {
+  streamAskAssistant,
+  formatApiError,
+} from '../../services/api';
 
 const DEFAULT_WELCOME = {
   id: 'welcome',
@@ -30,6 +34,8 @@ export function FloatingChatbot() {
     sessionId,
     startNewSession,
     saveSessionMessages,
+    recordSession,
+    knownFacts,
   } = useSession();
 
   const [scrolledBeyondHero, setScrolledBeyondHero] = useState(
@@ -67,15 +73,12 @@ export function FloatingChatbot() {
     };
   }, [isLandingPage]);
 
-  // Hide the floating chatbot on the dedicated chat page.
-  if (isChatPage) {
-    return null;
-  }
-
-  // Hide it on the landing page until the user scrolls.
-  if (isLandingPage && !scrolledBeyondHero) {
-    return null;
-  }
+  // Save floating chat messages to the active session.
+  useEffect(() => {
+    if (sessionId && chatMessages.length > 1) {
+      saveSessionMessages(sessionId, chatMessages);
+    }
+  }, [chatMessages, sessionId, saveSessionMessages]);
 
   const handleOpenChat = () => {
     startNewSession();
@@ -93,16 +96,187 @@ export function FloatingChatbot() {
     navigate('/chat');
   };
 
-  // Connect your original streaming API implementation here.
+  // Send a message through the existing backend SSE endpoint.
   const handleSendFloatingChat = async () => {
-    if (!chatInput.trim() || chatStreaming) return;
+    const textToSend = chatInput.trim();
 
-    // Preserve your original handleSendFloatingChat implementation here.
-    // This placeholder intentionally does not send a fake API request.
-    setChatError(
-      'Connect your existing floating chat API handler here.'
-    );
+    if (!textToSend || chatStreaming) return;
+
+    if (textToSend.length < 3) {
+      setChatError(
+        'Please provide at least 3 characters describing your flight situation.'
+      );
+      return;
+    }
+
+    setChatError(null);
+    setChatInput('');
+
+    const userMsgId = crypto.randomUUID();
+    const assistantMsgId = crypto.randomUUID();
+
+    const newMessages = [
+      ...chatMessages,
+      {
+        id: userMsgId,
+        role: 'user',
+        content: textToSend,
+      },
+      {
+        id: assistantMsgId,
+        role: 'assistant',
+        content: '',
+        questions: [],
+        entitlement: null,
+        summary: [],
+        isStreaming: true,
+      },
+    ];
+
+    setChatMessages(newMessages);
+    setChatStreaming(true);
+
+    try {
+      await streamAskAssistant({
+        message: textToSend,
+        sessionId,
+        knownFacts,
+
+        onEvent: (event) => {
+          const { type, data } = event;
+
+          if (type === 'session') {
+            recordSession(data.session_id, {
+              title: textToSend.slice(0, 30),
+            });
+          }
+
+          else if (type === 'question') {
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      questions: [
+                        ...(msg.questions || []),
+                        data.text,
+                      ],
+                    }
+                  : msg
+              )
+            );
+          }
+
+          else if (type === 'result') {
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      entitlement: data.entitlement,
+                      summary: data.summary || [],
+                    }
+                  : msg
+              )
+            );
+          }
+
+          else if (type === 'token') {
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      content: msg.content + data.text,
+                    }
+                  : msg
+              )
+            );
+          }
+
+          else if (type === 'done') {
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? {
+                      ...msg,
+                      isStreaming: false,
+                      status: data.status,
+                    }
+                  : msg
+              )
+            );
+          }
+
+          else if (type === 'error') {
+            setChatError(
+              formatApiError(
+                data,
+                'An error occurred during evaluation.'
+              )
+            );
+
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? { ...msg, isStreaming: false }
+                  : msg
+              )
+            );
+          }
+        },
+
+        onError: (err) => {
+          setChatError(
+            formatApiError(
+              err,
+              'Failed to connect to the flight advisor.'
+            )
+          );
+
+          setChatMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId
+                ? {
+                    ...msg,
+                    isStreaming: false,
+                    content:
+                      msg.content ||
+                      'I encountered an issue communicating with the advisor. Please try again.',
+                  }
+                : msg
+            )
+          );
+        },
+
+        onComplete: () => {
+          setChatMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId
+                ? { ...msg, isStreaming: false }
+                : msg
+            )
+          );
+        },
+      });
+    } catch (err) {
+      setChatError(
+        formatApiError(err, 'Something went wrong.')
+      );
+    } finally {
+      setChatStreaming(false);
+    }
   };
+
+  // Hide the floating chatbot on the dedicated chat page.
+  if (isChatPage) {
+    return null;
+  }
+
+  // Hide it on the landing page until the user scrolls.
+  if (isLandingPage && !scrolledBeyondHero) {
+    return null;
+  }
 
   return (
     <div className="fixed bottom-6 right-6 z-50">
@@ -242,12 +416,12 @@ export function FloatingChatbot() {
 
           {/* Error Banner */}
           {chatError && (
-            <div className="px-3 py-2 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-[11px] flex items-center justify-between">
+            <div className="px-3 py-2 bg-rose-500/10 border-t border-rose-500/20 text-rose-300 text-[11px] flex items-center justify-between gap-2">
               <span>{chatError}</span>
 
               <button
                 onClick={() => setChatError(null)}
-                className="underline"
+                className="underline shrink-0"
               >
                 Dismiss
               </button>
@@ -267,7 +441,8 @@ export function FloatingChatbot() {
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               placeholder="Describe your flight situation..."
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
+              disabled={chatStreaming}
+              className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
             />
 
             <Button
