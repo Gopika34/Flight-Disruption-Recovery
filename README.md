@@ -16,7 +16,7 @@ The system is designed around one core principle:
 
 | Component | Link |
 |---|---|
-| Frontend | [Add deployed frontend URL] |
+| Frontend | [Flight Disruption Recovery](https://flight-disruption-recovery.vercel.app/) |
 | Backend API | [Flight Disruption Recovery API](https://flight-disruption-recovery.onrender.com) |
 | API Documentation | [Interactive Swagger Documentation](https://flight-disruption-recovery.onrender.com/docs) |
 | Source Code | [GitHub Repository](https://github.com/Gopika34/Flight-Disruption-Recovery) |
@@ -204,6 +204,57 @@ Flight-Disruption-Recovery/
 ```
 
 *This is a high-level representation of the repository. Individual modules contain the implementation details.*
+
+---
+
+
+## Application Screenshots
+
+Explore the key interfaces of the Flight Disruption Recovery Engine, from flight disruption assessment to AI-powered passenger assistance.
+
+### Landing Page
+
+<p align="center">
+  <img src="screenshots/landing-page.png" alt="Flight Disruption Recovery landing page" width="100%" />
+</p>
+
+### Platform Overview
+
+<table>
+  <tr>
+    <td width="50%">
+      <h4 align="center">Flight Disruption Dashboard</h4>
+      <img src="screenshots/flight-disruption-dashboard.png" alt="Flight disruption dashboard" width="100%" />
+      <p align="center">Centralized dashboard for flight disruption assistance.</p>
+    </td>
+    <td width="50%">
+      <h4 align="center">AI Flight Assistant</h4>
+      <img src="screenshots/ai-assistant.png" alt="AI flight assistant" width="100%" />
+      <p align="center">Conversational AI interface for passenger queries.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h4 align="center">Disruption Evaluation</h4>
+      <img src="screenshots/evalute-disruption.png" alt="Flight disruption evaluation interface" width="100%" />
+      <p align="center">Evaluate disruption details and applicable passenger entitlements.</p>
+    </td>
+    <td width="50%">
+      <h4 align="center">Alternative Flight Options</h4>
+      <img src="screenshots/alternative-live-flight.png" alt="Alternative live flight options" width="100%" />
+      <p align="center">Explore alternative flight and recovery options.</p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <h4 align="center">DGCA Regulatory Reference</h4>
+      <p align="center">
+        <img src="screenshots/DGCA-regulations.png" alt="DGCA regulations interface" width="75%" />
+      </p>
+      <p align="center">Access aviation regulatory information supporting policy-grounded guidance.</p>
+    </td>
+  </tr>
+</table>
 
 ---
 
