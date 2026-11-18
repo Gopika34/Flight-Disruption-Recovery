@@ -19,7 +19,7 @@ def test_duty_of_care_triggers():
     res_1 = search_emergency_stay_and_transport(req_overnight)
     assert res_1.duty_of_care_mandated is True
     assert "3.4.3" in res_1.statutory_clause
-    assert "MANDATORY" in res_1.airline_liability_statement
+    assert "may apply" in res_1.airline_liability_statement
     assert "IndiGo" in res_1.counter_demand_script
 
     # 2. Daytime short delay -> duty of care hotel not mandated
@@ -31,7 +31,7 @@ def test_duty_of_care_triggers():
     )
     res_2 = search_emergency_stay_and_transport(req_short)
     assert res_2.duty_of_care_mandated is False
-    assert "not mandated" in res_2.airline_liability_statement
+    assert "do not establish" in res_2.airline_liability_statement
 
 
 def test_hotel_and_transport_options():
@@ -44,6 +44,9 @@ def test_hotel_and_transport_options():
     assert len(res.hotels) >= 2
     assert res.hotels[0].distance_km > 0
     assert res.hotels[0].price_per_night_inr > 0
+    assert res.hotels[0].verified_available is False
+    assert res.hotels[0].availability_status == "unverified_directory_listing"
+    assert res.hotels[0].price_status == "estimated_not_live"
 
     assert len(res.transport) >= 2
     # First should be shuttle or prepaid cab
@@ -81,3 +84,26 @@ def test_api_stay_transport_stream():
         assert "event: transport" in content
         assert "event: counter_script" in content
         assert "event: done" in content
+
+
+def test_six_hour_delay_requires_night_window_unless_overnight_or_over_24h():
+    daytime = EmergencyStayRequest(
+        airport_code="DEL", delay_hours=7.0, is_overnight=False,
+        delay_start_local_time="14:00",
+    )
+    night = EmergencyStayRequest(
+        airport_code="DEL", delay_hours=7.0, is_overnight=False,
+        delay_start_local_time="21:00",
+    )
+    unknown_time = EmergencyStayRequest(
+        airport_code="DEL", delay_hours=7.0, is_overnight=False,
+    )
+    assert search_emergency_stay_and_transport(daytime).duty_of_care_mandated is False
+    assert search_emergency_stay_and_transport(night).duty_of_care_mandated is True
+    assert search_emergency_stay_and_transport(unknown_time).duty_of_care_mandated is False
+
+
+def test_unknown_airport_does_not_get_synthetic_hotels():
+    req = EmergencyStayRequest(airport_code="MAA", delay_hours=2.0, is_overnight=False)
+    result = search_emergency_stay_and_transport(req)
+    assert result.hotels == []

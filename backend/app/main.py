@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from app.core.auth import get_current_principal, Principal, router as auth_router
 from pydantic import ValidationError
 
 from app.core.config import (
@@ -42,6 +43,7 @@ from app.services.clarification import questions_for
 from app.services.sessions import load_facts, save_facts, close_session_cache
 
 from app.llm.agent import run_agent, stream_agent_events
+from app.llm.intent_router import classify_intent
 from app.routers.claims import router as claims_router
 from app.routers.rebooking import router as rebooking_router
 from app.routers.stay_transport import router as stay_transport_router
@@ -87,7 +89,7 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_credentials=False,          # the API uses no cookies
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -160,14 +162,21 @@ def rate_limit(request: Request):
 # EXPANDED CAPABILITY ROUTERS
 # --------------------------------------------------
 
-app.include_router(claims_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
-app.include_router(rebooking_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
-app.include_router(stay_transport_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
+# Root aliases support direct Render URLs and the existing Vercel /api/* rewrite.
+app.include_router(auth_router, dependencies=[Depends(rate_limit)])
+app.include_router(auth_router, prefix="/api", dependencies=[Depends(rate_limit)])
+app.include_router(auth_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
+app.include_router(claims_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(rebooking_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(stay_transport_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(claims_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(rebooking_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(stay_transport_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 
 # Aliases for frontend convenience
-app.include_router(claims_router, prefix="/api", dependencies=[Depends(rate_limit)])
-app.include_router(rebooking_router, prefix="/api", dependencies=[Depends(rate_limit)])
-app.include_router(stay_transport_router, prefix="/api", dependencies=[Depends(rate_limit)])
+app.include_router(claims_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(rebooking_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(stay_transport_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 
 # --------------------------------------------------
 # ROOT / HEALTH
@@ -232,7 +241,7 @@ def llm_status():
 # RAG POLICY SEARCH
 # --------------------------------------------------
 
-@app.get("/search", tags=["RAG"], dependencies=[Depends(rate_limit)])
+@app.get("/search", tags=["RAG"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 def search(
     q: str = Query(min_length=2, max_length=300),
     k: int = Query(default=4, ge=1, le=20),
@@ -271,7 +280,7 @@ def search(
 # LIVE FLIGHT STATUS (AirLabs)
 # --------------------------------------------------
 
-@app.get("/flights/{flight_number}", tags=["Flights"], dependencies=[Depends(rate_limit)])
+@app.get("/flights/{flight_number}", tags=["Flights"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 def flight_status(flight_number: str):
     """Return the closest live/scheduled flight record for an IATA flight number."""
     try:
@@ -289,7 +298,7 @@ def flight_status(flight_number: str):
 # DETERMINISTIC RULE EVALUATION
 # --------------------------------------------------
 
-@app.post("/evaluate", tags=["Recovery"])
+@app.post("/evaluate", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 def evaluate_endpoint(scenario: Scenario):
     """
     Evaluate passenger facts using Python rules only.
@@ -317,7 +326,7 @@ def evaluate_endpoint(scenario: Scenario):
 # COMPLETE RECOVERY PLAN
 # --------------------------------------------------
 
-@app.post("/recover", tags=["Recovery"], dependencies=[Depends(rate_limit)])
+@app.post("/recover", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
 def recover(scenario: Scenario):
     """
     Generate a recovery plan containing:
@@ -353,7 +362,7 @@ def recover(scenario: Scenario):
 
 
 @app.post("/ask", tags=["AI Assistant"], dependencies=[Depends(rate_limit)])
-def ask(body: AskIn):
+def ask(body: AskIn, principal: Principal = Depends(get_current_principal)):
     """
     Passenger message -> one fact-extraction call -> Python rules
     -> live Indian alternative flights -> deterministic explanation.
@@ -365,7 +374,7 @@ def ask(body: AskIn):
 
     # 1. Load previous conversation facts.
     try:
-        saved_facts = load_facts(session_id)
+        saved_facts = load_facts(session_id, principal.owner_id)
         prior_facts = {**saved_facts, **body.known_facts}
 
     except RuntimeError:
@@ -412,7 +421,7 @@ def ask(body: AskIn):
 
     # 3. Persist extracted facts.
     try:
-        save_facts(session_id, facts)
+        save_facts(session_id, facts, principal.owner_id)
 
     except RuntimeError:
         logger.exception("Could not save passenger facts")
@@ -523,16 +532,23 @@ def ask(body: AskIn):
 # LANGCHAIN TOOL-CALLING AGENT
 # --------------------------------------------------
 
+@app.post("/assistant/route", tags=["AI Agent"], dependencies=[Depends(rate_limit)])
+def assistant_route(body: AskIn, principal: Principal = Depends(get_current_principal)):
+    """Return a safe intent classification for observability; no legal decision is made here."""
+    route = classify_intent(body.message)
+    return {"intent": route.intent, "destination": route.destination, "reason": route.reason}
+
+
 @app.post(
     "/agent/ask",
     tags=["AI Agent"],
     dependencies=[Depends(rate_limit)],
 )
-def agent_ask(body: AskIn):
+def agent_ask(body: AskIn, principal: Principal = Depends(get_current_principal)):
     session_id = body.session_id or str(uuid4())
 
     try:
-        response = run_agent(body.message, session_id=session_id)
+        response = run_agent(body.message, session_id=session_id, owner_id=principal.owner_id)
 
         return {
             "status": "success",
@@ -555,22 +571,28 @@ def agent_ask(body: AskIn):
     tags=["AI Agent"],
     dependencies=[Depends(rate_limit)],
 )
-async def agent_ask_stream(body: AskIn):
+async def agent_ask_stream(body: AskIn, principal: Principal = Depends(get_current_principal)):
     """
-    Stream LangChain agent thoughts, tool execution lifecycle, and response tokens via SSE.
+    Stream model-generated text chunks and tool lifecycle events via SSE.
     """
     session_id = body.session_id or str(uuid4())
 
     async def event_generator():
         try:
-            for event_name, event_data in stream_agent_events(body.message, session_id=session_id):
+            async for event_name, event_data in stream_agent_events(
+                body.message, session_id=session_id, owner_id=principal.owner_id
+            ):
                 yield _sse_event(event_name, event_data)
-                await asyncio.sleep(0.01)
-        except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)})
+        except Exception:
+            logger.exception("Agent streaming endpoint failed")
+            yield _sse_event("error", {"message": "The AI assistant is temporarily unavailable."})
             yield _sse_event("done", {"status": "failed", "session_id": session_id})
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
         
 
 # --------------------------------------------------
@@ -605,7 +627,7 @@ def _next_stream_item(iterator):
     tags=["AI Assistant"],
     dependencies=[Depends(rate_limit)],
 )
-async def ask_stream(body: AskIn):
+async def ask_stream(body: AskIn, principal: Principal = Depends(get_current_principal)):
     """
     Passenger message -> fact extraction -> deterministic rules
     -> policy retrieval -> streamed LLM explanation.
@@ -629,6 +651,7 @@ async def ask_stream(body: AskIn):
             saved_facts = await asyncio.to_thread(
                 load_facts,
                 session_id,
+                principal.owner_id,
             )
 
             prior_facts = {
@@ -654,6 +677,7 @@ async def ask_stream(body: AskIn):
                 save_facts,
                 session_id,
                 facts,
+                principal.owner_id,
             )
 
             # 3. Ask for disruption type if missing.

@@ -11,6 +11,20 @@ from app.services.rebooking import (
 client = TestClient(main.app)
 
 
+@pytest.fixture(autouse=True)
+def fake_airlabs_schedule(monkeypatch):
+    import app.services.rebooking as service
+    monkeypatch.setattr(service, "AIRLABS_API_KEY", "test-key")
+    from datetime import timedelta
+    now = service.now_ist()
+    departure = now + timedelta(hours=2)
+    arrival = departure + timedelta(hours=2)
+    monkeypatch.setattr(service, "find_alternatives", lambda *args, **kwargs: [
+        {"flight_number": "6E512", "departure": departure.isoformat(),
+         "arrival": arrival.isoformat(), "aircraft": "A320neo", "airline": "IndiGo"}
+    ])
+
+
 def test_search_flight_offers():
     req = RebookingSearchRequest(
         origin="DEL",
@@ -25,9 +39,10 @@ def test_search_flight_offers():
     first_offer = res.offers[0]
     assert first_offer.origin == "DEL"
     assert first_offer.destination == "BOM"
-    assert first_offer.price_inr is not None
-    assert first_offer.price_inr > 0
-    assert "DGCA" in first_offer.dgca_compensation_impact or "Statutory" in first_offer.dgca_compensation_impact
+    assert first_offer.price_inr is None
+    assert first_offer.data_source == "airlabs_schedule"
+    assert first_offer.price_status == "not_provided_by_schedule_provider"
+    assert first_offer.availability_status == "schedule_only_not_seat_confirmed"
 
 
 def test_rebooking_selection_progression():
@@ -53,7 +68,7 @@ def test_rebooking_selection_progression():
     assert res_1.confirmation_required is True
     assert res_1.voucher_id is None
 
-    # 3. Select WITH explicit confirmation -> issues voucher
+    # 3. Explicit confirmation only authorizes airline handoff; no voucher is issued.
     select_req_2 = RebookingSelectRequest(
         pnr="PNR123",
         passenger_name="Sita Devi",
@@ -64,9 +79,8 @@ def test_rebooking_selection_progression():
     res_2 = process_rebooking_selection(select_req_2)
     assert res_2.status == "handoff_ready"
     assert res_2.confirmation_required is False
-    assert res_2.voucher_id is not None
-    assert "REBOOK-VOUCHER" in res_2.voucher_id
-    assert "PNR123" in res_2.agent_presentation_instructions
+    assert res_2.voucher_id is None
+    assert "has not booked" in res_2.agent_presentation_instructions
 
 
 def test_api_rebooking_endpoints():
@@ -94,7 +108,7 @@ def test_api_rebooking_endpoints():
     assert select_resp.status_code == 200
     handoff_data = select_resp.json()
     assert handoff_data["status"] == "handoff_ready"
-    assert handoff_data["voucher_id"] is not None
+    assert handoff_data["voucher_id"] is None
 
 
 def test_api_rebooking_stream():
@@ -110,3 +124,23 @@ def test_api_rebooking_stream():
         assert "event: offers" in content
         assert "event: rights" in content
         assert "event: done" in content
+
+
+def test_unknown_offer_is_rejected():
+    req = RebookingSelectRequest(
+        pnr="PNR123", passenger_name="Sita Devi", selected_offer_id="NOT-REAL",
+        disrupted_flight_number="AI504", explicit_confirmation=True,
+    )
+    with pytest.raises(ValueError, match="unknown or expired"):
+        process_rebooking_selection(req)
+
+
+def test_empty_provider_result_does_not_create_demo_flights(monkeypatch):
+    import app.services.rebooking as service
+    monkeypatch.setattr(service, "find_alternatives", lambda *args, **kwargs: [])
+    req = RebookingSearchRequest(
+        origin="MAA", destination="DEL", disrupted_flight_number="6E204"
+    )
+    result = search_flight_offers(req)
+    assert result.offers == []
+    assert result.offers_count == 0

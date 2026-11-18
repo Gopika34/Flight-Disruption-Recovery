@@ -1,5 +1,3 @@
-import logging
-from typing import Any
 from app.schemas.capabilities import (
     AirlineContact,
     ClaimPackageRequest,
@@ -8,10 +6,15 @@ from app.schemas.capabilities import (
     TimelineMilestone,
 )
 from app.rules.rule_engine import evaluate
-from app.llm.router import complete
-from app.loaders.prompt_loader import load_prompt
 
-logger = logging.getLogger(__name__)
+
+
+class ClaimFactsIncomplete(ValueError):
+    def __init__(self, status: str, missing_facts: list[str], notes: list[str] | None = None):
+        self.status = status
+        self.missing_facts = missing_facts
+        self.notes = notes or []
+        super().__init__(f"Claim cannot be prepared: {status}. Missing facts: {', '.join(missing_facts) or 'review required'}")
 
 AIRLINE_REGISTRY: dict[str, AirlineContact] = {
     "6E": AirlineContact(
@@ -58,10 +61,10 @@ AIRLINE_REGISTRY: dict[str, AirlineContact] = {
 
 DEFAULT_AIRLINE = AirlineContact(
     airline_code="GEN",
-    airline_name="Commercial Airline",
-    nodal_officer_email="nodal.officer@airline.com",
-    appellate_authority_email="appellate.authority@airline.com",
-    customer_support_phone="1800-AIRLINE",
+    airline_name="Operating Airline — verify carrier",
+    nodal_officer_email="Not available — verify on the airline's official website",
+    appellate_authority_email="Not available — verify on the airline's official website",
+    customer_support_phone="Not available — verify on the airline's official website",
     portal_url="https://airsewa.gov.in",
 )
 
@@ -192,88 +195,85 @@ def generate_evidence_checklist(disruption_type: str) -> list[EvidenceItem]:
 
 
 def build_claim_package(req: ClaimPackageRequest) -> ClaimPackageResponse:
-    facts = dict(req.scenario_facts)
-    if "type" not in facts:
-        facts["type"] = "cancellation"
+    """Build a claim only after the deterministic engine has a complete decision.
 
-    # Evaluate deterministically
+    Legal entitlements are never delegated to an LLM. Passenger bank/payment
+    details are deliberately excluded from generated text and model prompts.
+    """
+    facts = dict(req.scenario_facts)
+    if not facts.get("type"):
+        raise ClaimFactsIncomplete("needs_more_info", ["type"])
+    facts.setdefault("flight_number", req.flight_number.upper())
+
     decision = evaluate(facts)
+    status = decision.get("status")
+    if status != "ok":
+        raise ClaimFactsIncomplete(
+            status or "unable_to_determine",
+            list(decision.get("missing_facts") or []),
+            list(decision.get("notes") or []),
+        )
+
     airline = get_airline_contact(req.flight_number)
     timeline = generate_claim_timeline()
-    checklist = generate_evidence_checklist(decision.get("type", "cancellation"))
+    disruption_type = decision.get("type", facts["type"])
+    checklist = generate_evidence_checklist(disruption_type)
 
-    comp_amt = float(decision.get("compensation") or 0.0)
+    # A zero is used only when the rule engine explicitly returns status=ok
+    # and a null/zero compensation value. Incomplete decisions are rejected above.
+    raw_compensation = decision.get("compensation")
+    comp_amt = float(raw_compensation) if raw_compensation is not None else None
+    comp_display = f"INR {comp_amt:,.2f}" if comp_amt is not None else "no statutory compensation amount was calculated by the rule engine"
     refund_status = (
         "100% Full Ticket Refund Mandated"
         if decision.get("refund") == "full_ticket_refund"
-        else "Standard Applicable Refund"
+        else "No full-ticket refund determined by the supplied facts"
     )
 
     care_parts = []
     if decision.get("meals"):
-        care_parts.append("Mandatory Meals & Refreshments")
+        care_parts.append("Meals and refreshments")
     if decision.get("hotel"):
-        care_parts.append("Mandatory Overnight Hotel & Taxi Transfers")
-    care_status = ", ".join(care_parts) if care_parts else "Statutory Duty-of-Care"
+        care_parts.append("Hotel accommodation and transfers")
+    care_status = ", ".join(care_parts) if care_parts else "No additional duty-of-care entitlement determined"
 
-    # Generate formal legal notice via prompt template
     clauses = decision.get("clauses") or ["CAR Section 3 Series M Part IV"]
     clause_str = ", ".join(clauses)
+    origin = str(facts.get("origin") or "[Origin]")
+    destination = str(facts.get("destination") or "[Destination]")
+    expenses = float(req.out_of_pocket_expenses_inr or 0.0)
 
-    prompt = load_prompt("claim_package.txt").format(
-        passenger_name=req.passenger_name,
-        pnr=req.pnr.upper(),
-        flight_number=req.flight_number.upper(),
-        origin=facts.get("origin", "Origin Airport"),
-        destination=facts.get("destination", "Destination Airport"),
-        disruption_type=decision.get("type", "flight disruption"),
-        expenses_inr=req.out_of_pocket_expenses_inr or 0.0,
-        payment_details=req.bank_details_or_upi or "Direct Bank Transfer (NEFT) / UPI to registered account",
-        compensation_inr=comp_amt,
-        refund_entitlement=refund_status,
-        care_entitlement=care_status,
-        clauses=clause_str,
-        airline_name=airline.airline_name,
-        nodal_email=airline.nodal_officer_email,
-        appellate_email=airline.appellate_authority_email,
+    # Deterministic notice: an LLM must not alter legal amounts, facts or claims.
+    notice_text = (
+        "FORMAL PASSENGER GRIEVANCE — DRAFT FOR REVIEW\n"
+        "DGCA CAR Section 3, Series M, Part IV\n\n"
+        f"To: Nodal Officer, {airline.airline_name} ({airline.nodal_officer_email})\n"
+        f"Subject: Flight disruption grievance — PNR {req.pnr.upper()}, flight {req.flight_number.upper()}\n\n"
+        "Dear Sir/Madam,\n\n"
+        f"I, {req.passenger_name}, booked on flight {req.flight_number.upper()} under PNR {req.pnr.upper()}, "
+        f"was affected by a {disruption_type.replace('_', ' ')} on the route {origin} to {destination}.\n\n"
+        f"Based on the facts currently supplied, the deterministic assessment records {comp_display}. "
+        f"The applicable provisions identified by the assessment are: {clause_str}. "
+        f"Refund assessment: {refund_status}. Duty-of-care assessment: {care_status}.\n\n"
+        f"Documented out-of-pocket expenses supplied: INR {expenses:,.2f}. This figure is a passenger-reported "
+        "expense amount and is not represented as an automatically approved reimbursement. Please review the "
+        "attached ticket, payment proof, disruption notice and supporting receipts, and provide a written response "
+        "with the basis of your decision.\n\n"
+        "This is a draft for passenger review. Please verify every factual detail and the applicable policy text "
+        "before submission.\n\n"
+        f"Sincerely,\n{req.passenger_name}\nPNR: {req.pnr.upper()}\nFlight: {req.flight_number.upper()}"
     )
 
-    try:
-        notice_text = complete(prompt, temperature=0.2)
-    except Exception as exc:
-        logger.warning("LLM claim notice drafting fallback triggered: %s", exc)
-        notice_text = (
-            f"FORMAL STATUTORY GRIEVANCE NOTICE\n"
-            f"Issued under DGCA CAR Section 3, Series M, Part IV\n\n"
-            f"To,\n"
-            f"The Nodal Officer,\n"
-            f"{airline.airline_name} ({airline.nodal_officer_email})\n\n"
-            f"Sub: Legal Demand for Statutory Compensation of INR {comp_amt:,.2f} "
-            f"and Refund/Expense Settlement (PNR: {req.pnr.upper()})\n\n"
-            f"Dear Sir/Madam,\n\n"
-            f"I was scheduled to travel on flight {req.flight_number.upper()} under PNR {req.pnr.upper()}, "
-            f"which was subjected to {decision.get('type')}. "
-            f"Pursuant to DGCA CAR Section 3, Series M, Part IV (specifically {clause_str}), "
-            f"I hereby demand the immediate settlement of my statutory entitlement of INR {comp_amt:,.2f}.\n\n"
-            f"Furthermore, in accordance with DGCA grievance redressal regulations, {airline.airline_name} "
-            f"is mandated to resolve this claim within 30 calendar days. Failure to remit this statutory compensation "
-            f"will necessitate escalation to the Ministry of Civil Aviation AirSewa portal (airsewa.gov.in) "
-            f"and the competent Consumer Disputes Redressal Commission.\n\n"
-            f"Sincerely,\n"
-            f"{req.passenger_name}\n"
-            f"PNR: {req.pnr.upper()}\n"
-            f"Flight: {req.flight_number.upper()}"
-        )
-
     escalation_instructions = (
-        f"1. Email this notice to {airline.airline_name}'s Nodal Officer at {airline.nodal_officer_email}.\n"
-        f"2. Attach copies of your boarding pass, e-ticket, and written delay certificate.\n"
-        f"3. Mark your calendar for Day 30. If unresolved, escalate with your grievance token to AirSewa (airsewa.gov.in)."
+        f"1. Review this draft and correct any inaccurate passenger or flight details.\n"
+        f"2. Submit it through {airline.airline_name}'s official grievance channel: {airline.portal_url}.\n"
+        f"3. Attach your e-ticket, boarding pass, airline disruption communication and relevant receipts.\n"
+        "4. Retain the grievance reference and escalate through the applicable official channel if unresolved."
     )
 
     return ClaimPackageResponse(
         pnr=req.pnr.upper(),
-        disruption_type=decision.get("type", "cancellation"),
+        disruption_type=disruption_type,
         statutory_compensation_inr=comp_amt,
         refund_status=refund_status,
         care_status=care_status,

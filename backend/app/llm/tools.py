@@ -85,9 +85,10 @@ def get_live_flight_status(flight_number: str) -> str:
 def prepare_passenger_claim_package(
     pnr: str,
     flight_number: str,
+    disruption_type: str,
     passenger_name: str = "Passenger",
-    disruption_type: str = "cancellation",
     out_of_pocket_expenses_inr: float = 0.0,
+    scenario_facts: dict | None = None,
 ) -> str:
     """
     Prepare a complete statutory passenger compensation claim package.
@@ -110,7 +111,8 @@ def prepare_passenger_claim_package(
             pnr=pnr,
             flight_number=flight_number,
             out_of_pocket_expenses_inr=out_of_pocket_expenses_inr,
-            scenario_facts={"type": disruption_type, "flight_number": flight_number},
+            scenario_facts={**(scenario_facts or {}), "type": disruption_type,
+                            "flight_number": flight_number},
         )
         res = build_claim_package(req)
         return json.dumps(
@@ -130,8 +132,16 @@ def prepare_passenger_claim_package(
             default=str,
         )
     except Exception as exc:
+        from app.services.claims import ClaimFactsIncomplete
+        if isinstance(exc, ClaimFactsIncomplete):
+            return json.dumps({
+                "status": exc.status,
+                "missing_facts": exc.missing_facts,
+                "notes": exc.notes,
+                "next_action": "Ask the passenger for these facts; do not invent them.",
+            })
         logger.exception("Claim package tool failed")
-        return f"Could not generate claim package: {str(exc)}"
+        return "Claim package generation is temporarily unavailable."
 
 
 # ==================================================
@@ -147,8 +157,8 @@ def search_alternative_flights(
 ) -> str:
     """
     Search and compare alternative commercial flights for rebooking.
-    Evaluates departure times, wait deltas, price estimates, and DGCA
-    compensation impact (e.g. whether alternate within 2h affects compensation).
+    Evaluates provider-returned schedule times and wait windows. AirLabs does
+    not supply bookable fare or confirmed seat inventory through this integration.
 
     Parameters:
     - origin: 3-letter IATA origin airport (e.g. DEL, BOM).
@@ -173,7 +183,9 @@ def search_alternative_flights(
                 "origin": res.origin,
                 "destination": res.destination,
                 "offers_count": res.offers_count,
+                "search_status": res.search_status,
                 "offers": [o.model_dump() for o in res.offers[:4]],
+                "source_notice": "Schedule-only data; no live fares or confirmed seats.",
                 "rights_note": res.passenger_rights_note,
             },
             ensure_ascii=False,
@@ -181,7 +193,7 @@ def search_alternative_flights(
         )
     except Exception as exc:
         logger.exception("Alternative flight search tool failed")
-        return f"Could not retrieve alternative flights: {str(exc)}"
+        return "Alternative flight schedule search is temporarily unavailable."
 
 
 # ==================================================
@@ -191,14 +203,15 @@ def search_alternative_flights(
 @tool
 def find_emergency_stay_and_transport(
     airport_code: str,
-    delay_hours: float = 6.0,
-    is_overnight: bool = True,
+    delay_hours: float,
+    is_overnight: bool = False,
     airline_name: str = "",
+    delay_start_local_time: str | None = None,
 ) -> str:
     """
     Find emergency hotel accommodation and airport taxi transport for
-    stranded passengers. Evaluates statutory duty-of-care under DGCA Para 3.4.3
-    and provides airline counter demand scripts and verified hotel options.
+    stranded passengers. Evaluates the supplied timing facts and returns curated
+    hotel directory references and estimated transport information. Availability is unverified.
 
     Parameters:
     - airport_code: 3-letter IATA airport code where passenger is stranded.
@@ -214,6 +227,7 @@ def find_emergency_stay_and_transport(
             airport_code=airport_code,
             delay_hours=delay_hours,
             is_overnight=is_overnight,
+            delay_start_local_time=delay_start_local_time,
             airline_name=airline_name or None,
         )
         res = search_emergency_stay_and_transport(req)
@@ -225,6 +239,7 @@ def find_emergency_stay_and_transport(
                 "statutory_clause": res.statutory_clause,
                 "hotels_count": len(res.hotels),
                 "top_hotels": [h.model_dump() for h in res.hotels[:3]],
+                "availability_notice": "Hotel listings are unverified directory references; prices are estimates.",
                 "transport_options": [t.model_dump() for t in res.transport],
                 "counter_script": res.counter_demand_script,
             },
@@ -233,7 +248,46 @@ def find_emergency_stay_and_transport(
         )
     except Exception as exc:
         logger.exception("Emergency stay tool failed")
-        return f"Could not retrieve emergency stay options: {str(exc)}"
+        return "Emergency stay information is temporarily unavailable."
+
+
+
+# ==================================================
+# TOOL 6: DETERMINISTIC DISRUPTION EVALUATION
+# ==================================================
+
+@tool
+def evaluate_disruption(disruption_facts: dict) -> str:
+    """Evaluate passenger entitlements using FlightGuard's deterministic Python rules.
+
+    Supply only facts explicitly provided by the passenger or verified by a
+    trusted provider. Supported keys are the Scenario schema fields: type,
+    origin, destination, flight_number, notice_hours, delay_minutes,
+    block_time_minutes, checked_in_on_time, domestic, and other documented
+    Scenario fields. If required facts are missing, the tool returns the
+    rule engine's missing-information result; never guess missing values.
+    """
+    from pydantic import ValidationError
+    from app.schemas.scenario import Scenario
+    from app.services.recovery import enrich_facts
+    from app.rules.rule_engine import evaluate
+
+    try:
+        if not isinstance(disruption_facts, dict):
+            return json.dumps({"status": "invalid_input", "message": "disruption_facts must be an object."})
+        validated = Scenario.model_validate(disruption_facts).facts()
+        if not validated.get("type"):
+            return json.dumps({"status": "needs_more_info", "missing_facts": ["type"], "message": "Identify the disruption type before evaluating."})
+        enriched, notes = enrich_facts(validated)
+        decision = evaluate(enriched)
+        return json.dumps({"status": decision.get("status", "ok"), "decision": decision, "assumptions_and_notes": notes, "facts_used": enriched}, ensure_ascii=False, default=str)
+    except ValidationError as exc:
+        return json.dumps({"status": "invalid_input", "validation_errors": exc.errors(include_input=False)}, ensure_ascii=False, default=str)
+    except ValueError as exc:
+        return json.dumps({"status": "needs_more_info", "message": str(exc), "next_action": "Ask the passenger for the missing or unsupported facts; do not infer them."})
+    except Exception:
+        logger.exception("Deterministic disruption evaluation tool failed")
+        return json.dumps({"status": "unavailable", "message": "The entitlement engine is temporarily unavailable."})
 
 
 # ==================================================
@@ -246,4 +300,5 @@ flight_tools = [
     prepare_passenger_claim_package,
     search_alternative_flights,
     find_emergency_stay_and_transport,
+    evaluate_disruption,
 ]

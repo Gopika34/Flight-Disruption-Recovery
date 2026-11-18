@@ -76,7 +76,7 @@ class ClaimPackageRequest(BaseModel):
 class ClaimPackageResponse(BaseModel):
     pnr: str
     disruption_type: str
-    statutory_compensation_inr: float
+    statutory_compensation_inr: float | None = None
     refund_status: str
     care_status: str
     airline: AirlineContact
@@ -107,6 +107,10 @@ class FlightOffer(BaseModel):
     provider_booking_url: str | None = None
     dgca_compensation_impact: str
     recommended: bool = False
+    data_source: str = "unknown"
+    price_status: str = "unknown"
+    availability_status: str = "unverified"
+    expires_at: str | None = None
 
 
 class RebookingSearchRequest(BaseModel):
@@ -127,6 +131,7 @@ class RebookingComparisonResponse(BaseModel):
     offers_count: int
     offers: list[FlightOffer]
     passenger_rights_note: str
+    search_status: Literal["results_found", "no_results", "provider_not_configured", "provider_unavailable"] = "no_results"
 
 
 class RebookingSelectRequest(BaseModel):
@@ -168,7 +173,13 @@ class HotelOffer(BaseModel):
     address: str
     phone: str
     booking_url: str | None = None
-    verified_available: bool = True
+    # Kept for backwards compatibility; directory data must never claim live availability.
+    verified_available: bool = False
+    availability_status: str = "unverified"
+    listing_source: str = "curated_directory"
+    price_status: str = "estimated_not_live"
+    contact_status: str = "directory_reference_verify"
+    shuttle_status: str = "unverified_listing_detail"
 
 
 class TransportOption(BaseModel):
@@ -177,6 +188,8 @@ class TransportOption(BaseModel):
     estimated_duration_minutes: int
     pickup_point: str
     booking_link_or_instructions: str
+    fare_status: str = "estimated_not_live"
+    availability_status: str = "not_checked"
 
 
 class EmergencyStayRequest(BaseModel):
@@ -184,13 +197,15 @@ class EmergencyStayRequest(BaseModel):
 
     airport_code: str = Field(min_length=3, max_length=3)
     delay_hours: float = Field(ge=0)
-    is_overnight: bool = True
+    is_overnight: bool = False
+    delay_start_local_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     passenger_count: int = Field(default=1, ge=1, le=9)
     airline_name: str | None = None
 
 
 class EmergencyDutyOfCareResponse(BaseModel):
     airport_code: str
+    hotel_directory_status: str = "curated_directory_unverified"
     duty_of_care_mandated: bool
     statutory_clause: str
     airline_liability_statement: str

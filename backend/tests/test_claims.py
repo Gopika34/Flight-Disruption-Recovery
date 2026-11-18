@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import app.main as main
 from app.schemas.capabilities import ClaimPackageRequest
 from app.services.claims import (
+    ClaimFactsIncomplete,
     AIRLINE_REGISTRY,
     build_claim_package,
     generate_claim_timeline,
@@ -12,22 +13,6 @@ from app.services.claims import (
 )
 
 client = TestClient(main.app)
-
-
-@pytest.fixture(autouse=True)
-def mock_llm_complete(monkeypatch):
-    """Avoid slow network LLM retries during fast unit testing."""
-    import app.services.claims as claims_svc
-    monkeypatch.setattr(
-        claims_svc,
-        "complete",
-        lambda *args, **kwargs: (
-            "FORMAL STATUTORY GRIEVANCE NOTICE\n\n"
-            "To: Airline Nodal Officer\n"
-            "Demand for statutory compensation under DGCA CAR Section 3.\n"
-            "Flight: 6E204 | PNR: XYZ987"
-        ),
-    )
 
 
 def test_airline_contact_lookup():
@@ -144,3 +129,14 @@ def test_api_claims_stream():
         assert "event: timeline" in content
         assert "event: checklist" in content
         assert "event: done" in content
+
+
+def test_claim_refuses_incomplete_facts():
+    req = ClaimPackageRequest(
+        passenger_name="Rahul Sharma", pnr="XYZ987", flight_number="6E204",
+        scenario_facts={"type": "cancellation"},
+    )
+    with pytest.raises(ClaimFactsIncomplete) as exc:
+        build_claim_package(req)
+    assert exc.value.status == "needs_more_info"
+    assert exc.value.missing_facts

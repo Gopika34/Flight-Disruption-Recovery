@@ -1,7 +1,10 @@
 import pytest
 import app.main as main
+from app.core.auth import get_current_principal, Principal
+
+# API tests use a deterministic test principal; production always verifies a bearer token.
+main.app.dependency_overrides[get_current_principal] = lambda: Principal(owner_id="test_user", kind="test")
 import app.services.sessions as sessions_mod
-import app.services.claims as claims_mod
 import app.llm.router as router_mod
 
 
@@ -21,22 +24,22 @@ def fake_session_store(monkeypatch):
     """
     store = {}
 
-    def _load_facts(sid):
+    def _load_facts(sid, owner_id=None):
         return dict(store.get(sid, {}).get("facts", {}))
 
-    def _save_facts(sid, facts):
+    def _save_facts(sid, facts, owner_id=None):
         store.setdefault(sid, {})["facts"] = dict(facts)
 
-    def _load_messages(sid):
+    def _load_messages(sid, owner_id=None):
         return list(store.get(sid, {}).get("messages", []))
 
-    def _save_messages(sid, msgs):
+    def _save_messages(sid, msgs, owner_id=None):
         store.setdefault(sid, {})["messages"] = list(msgs)
 
-    def _append_message(sid, msg):
+    def _append_message(sid, msg, owner_id=None):
         store.setdefault(sid, {}).setdefault("messages", []).append(dict(msg))
 
-    def _load_session(sid):
+    def _load_session(sid, owner_id=None):
         sess = store.get(sid, {})
         return {
             "facts": dict(sess.get("facts", {})),
@@ -64,5 +67,4 @@ def mock_llm_for_unit_tests(monkeypatch):
             "Flight: 6E204 | PNR: XYZ987"
         )
 
-    monkeypatch.setattr(claims_mod, "complete", _mock_complete)
     monkeypatch.setattr(router_mod, "complete", _mock_complete)

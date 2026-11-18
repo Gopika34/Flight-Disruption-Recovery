@@ -5,10 +5,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from langchain_core.runnables import (
-    RunnableLambda,
-    RunnableGenerator,
-)
+from langchain_core.runnables import RunnableLambda, RunnableGenerator
 
 from app.llm.router import (
     complete,
@@ -21,31 +18,9 @@ from app.rag.generation import build_explanation
 logger = logging.getLogger(__name__)
 
 
-# ==================================================
-# 1. LANGCHAIN RETRY
-# ==================================================
-
-def create_retry_runnable(function):
-
-    runnable = RunnableLambda(function)
-
-    return runnable.with_retry(
-        retry_if_exception_type=(
-            TimeoutError,
-            ConnectionError,
-            httpx.TimeoutException,
-            httpx.NetworkError,
-            httpx.RemoteProtocolError,
-        ),
-        wait_exponential_jitter=True,
-        stop_after_attempt=3,
-        exponential_jitter_params={
-            "initial": 1,
-            "max": 8,
-            "exp_base": 2,
-        },
-    )
-
+# The base text router already performs provider-level retry, cooldown and
+# fallback. Do not wrap it in another retry layer: nested retries multiply
+# latency and can exhaust provider quotas.
 
 # ==================================================
 # 2. MULTI-PROVIDER GENERATION
@@ -83,9 +58,7 @@ def fallback_explanation(data):
 
 def create_explanation_chain():
 
-    primary = RunnableLambda(
-        generate_explanation
-    )
+    primary = RunnableLambda(generate_explanation)
 
     fallback = RunnableLambda(
         fallback_explanation
@@ -93,7 +66,14 @@ def create_explanation_chain():
 
     return primary.with_fallbacks(
         [fallback],
-        exceptions_to_handle=(Exception,),
+        exceptions_to_handle=(
+            TimeoutError,
+            ConnectionError,
+            httpx.TimeoutException,
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+            RuntimeError,
+        ),
     )
 
 
@@ -140,8 +120,10 @@ def stream_generator(input_iterator: Iterator[dict]):
                 raise
             
 
-def stream_response(prompt, fallback=None):
+stream_chain = RunnableGenerator(stream_generator)
 
+
+def stream_response(prompt, fallback=None):
     yield from stream_chain.stream({
         "prompt": prompt,
         "fallback": fallback,

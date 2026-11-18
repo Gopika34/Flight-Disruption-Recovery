@@ -27,8 +27,8 @@ def reset_rate_limit():
 def fake_session_store(monkeypatch):
     """Never touch the real Atlas: sessions live in a dict for every API test."""
     store = {}
-    monkeypatch.setattr(main, "load_facts", lambda sid: dict(store.get(sid, {})))
-    monkeypatch.setattr(main, "save_facts", lambda sid, facts: store.__setitem__(sid, dict(facts)))
+    monkeypatch.setattr(main, "load_facts", lambda sid, owner_id=None: dict(store.get(sid, {})))
+    monkeypatch.setattr(main, "save_facts", lambda sid, facts, owner_id=None: store.__setitem__(sid, dict(facts)))
     return store
 
 
@@ -159,7 +159,7 @@ def test_ask_persists_and_reuses_session_facts(monkeypatch, fake_session_store):
 
 
 def test_ask_storage_down_returns_503(monkeypatch):
-    def down(sid):
+    def down(sid, owner_id=None):
         raise RuntimeError("mongo down")
     monkeypatch.setattr(main, "load_facts", down)
     assert client.post("/ask", json={"message": "my flight was cancelled"}).status_code == 503

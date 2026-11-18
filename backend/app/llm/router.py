@@ -703,187 +703,56 @@ def stream_complete(prompt, temperature=0.2):
 
 
 # --------------------------------------------------
-# LANGCHAIN TOOL-CALLING CHAT MODEL ADAPTERS
+# LANGCHAIN TOOL-CALLING CHAT MODELS
 # --------------------------------------------------
 
-import json
-import uuid
-from typing import Any, List, Optional
+from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 
-class OpenAIToolCallingChatModel(BaseChatModel):
-    """
-    Adapter enabling native tool-calling across OpenAI-compatible providers
-    such as Groq and Mistral for LangChain agents.
-    """
-    api_url: str
-    api_key: str
-    model_name: str
-    provider_label: str = "openai_compatible"
-    temperature: float = 0.1
-    timeout: float = 30.0
-    tools: list[dict[str, Any]] = []
+def get_agent_chat_models() -> Any:
+    """Build native async/streaming tool-calling models in configured order.
 
-    @property
-    def _llm_type(self) -> str:
-        return f"{self.provider_label}_tool_calling"
-
-    def bind_tools(self, tools: list[Any], **kwargs: Any) -> "OpenAIToolCallingChatModel":
-        formatted_tools = [convert_to_openai_tool(t) for t in tools]
-        return self.model_copy(update={"tools": formatted_tools})
-
-    def _convert_messages(self, messages: list[BaseMessage]) -> list[dict[str, Any]]:
-        converted = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage):
-                converted.append({"role": "user", "content": str(msg.content)})
-            elif isinstance(msg, SystemMessage):
-                converted.append({"role": "system", "content": str(msg.content)})
-            elif isinstance(msg, ToolMessage):
-                converted.append({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
-                    "content": str(msg.content),
-                })
-            elif isinstance(msg, AIMessage):
-                ai_dict: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": str(msg.content or ""),
-                }
-                if msg.tool_calls:
-                    ai_dict["tool_calls"] = [
-                        {
-                            "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": (
-                                    json.dumps(tc["args"])
-                                    if isinstance(tc["args"], dict)
-                                    else str(tc["args"])
-                                ),
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ]
-                converted.append(ai_dict)
-            else:
-                converted.append({"role": "user", "content": str(msg.content)})
-        return converted
-
-    def _generate(
-        self,
-        messages: list[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[Any] = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        payload: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": self._convert_messages(messages),
-            "temperature": self.temperature,
-        }
-        if self.tools:
-            payload["tools"] = self.tools
-            payload["tool_choice"] = "auto"
-
-        response = httpx.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        choice = data["choices"][0]["message"]
-        content = choice.get("content") or ""
-        tool_calls = []
-
-        if choice.get("tool_calls"):
-            for tc in choice["tool_calls"]:
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                except Exception:
-                    args = {"raw": tc["function"]["arguments"]}
-                tool_calls.append({
-                    "name": tc["function"]["name"],
-                    "args": args,
-                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-                    "type": "tool_call",
-                })
-
-        generation = ChatGeneration(
-            message=AIMessage(content=content, tool_calls=tool_calls)
-        )
-        return ChatResult(generations=[generation])
-
-
-def get_agent_chat_models() -> BaseChatModel:
-    """
-    Returns configured ChatModels chained with .with_fallbacks()
-    based on C.LLM_ORDER priority (Gemini -> Groq -> Mistral).
-    All models support native LangChain tool-calling.
+    The ordinary complete()/stream_complete() router above remains unchanged.
+    ChatOpenAI speaks the OpenAI-compatible APIs exposed by Groq and Mistral;
+    Gemini uses its first-party LangChain adapter.
     """
     models: list[BaseChatModel] = []
 
-    for name in C.LLM_ORDER:
-        name = name.strip().lower()
-
+    for provider in C.LLM_ORDER:
+        name = provider.strip().lower()
         if name == "gemini" and C.GEMINI_API_KEY:
-            for m in C.GEMINI_MODELS:
-                models.append(
-                    ChatGoogleGenerativeAI(
-                        model=m,
-                        google_api_key=C.GEMINI_API_KEY,
-                        temperature=0.1,
-                        timeout=C.LLM_TIMEOUT_S,
-                        max_retries=1,
-                    )
-                )
-
+            for model_name in C.GEMINI_MODELS:
+                models.append(ChatGoogleGenerativeAI(
+                    model=model_name,
+                    google_api_key=C.GEMINI_API_KEY,
+                    temperature=0.1,
+                    timeout=C.LLM_TIMEOUT_S,
+                    max_retries=1,
+                ))
         elif name == "groq" and C.GROQ_API_KEY:
-            models.append(
-                OpenAIToolCallingChatModel(
-                    api_url="https://api.groq.com/openai/v1/chat/completions",
-                    api_key=C.GROQ_API_KEY,
-                    model_name=C.GROQ_MODEL,
-                    provider_label="groq",
-                    temperature=0.1,
-                    timeout=C.LLM_TIMEOUT_S,
-                )
-            )
-
+            models.append(ChatOpenAI(
+                model=C.GROQ_MODEL,
+                api_key=C.GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1",
+                temperature=0.1,
+                timeout=C.LLM_TIMEOUT_S,
+                max_retries=1,
+            ))
         elif name == "mistral" and C.MISTRAL_API_KEY:
-            models.append(
-                OpenAIToolCallingChatModel(
-                    api_url="https://api.mistral.ai/v1/chat/completions",
-                    api_key=C.MISTRAL_API_KEY,
-                    model_name=C.MISTRAL_MODEL,
-                    provider_label="mistral",
-                    temperature=0.1,
-                    timeout=C.LLM_TIMEOUT_S,
-                )
-            )
+            models.append(ChatOpenAI(
+                model=C.MISTRAL_MODEL,
+                api_key=C.MISTRAL_API_KEY,
+                base_url="https://api.mistral.ai/v1",
+                temperature=0.1,
+                timeout=C.LLM_TIMEOUT_S,
+                max_retries=1,
+            ))
 
     if not models:
         raise RuntimeError("No compatible tool-calling LLM providers configured.")
-
     if len(models) == 1:
         return models[0]
-
     return models[0].with_fallbacks(models[1:])

@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -26,6 +27,14 @@ IS_PRODUCTION = ENVIRONMENT == "production"
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB")
 MONGO_TIMEOUT_MS = int(os.getenv("MONGO_TIMEOUT_MS", "5000"))
+
+# Authentication: Clerk for registered users, backend-signed JWTs for guests.
+CLERK_ISSUER_URL = os.getenv("CLERK_ISSUER_URL", "").strip().rstrip("/")
+CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "").strip()
+AUTHORIZED_PARTIES = _list("AUTHORIZED_PARTIES", "")
+GUEST_TOKEN_SECRET = os.getenv("GUEST_TOKEN_SECRET", "") or (secrets.token_urlsafe(48) if not IS_PRODUCTION else "")
+GUEST_TOKEN_ISSUER = os.getenv("GUEST_TOKEN_ISSUER", "flightguard-api")
+GUEST_TOKEN_TTL_HOURS = int(os.getenv("GUEST_TOKEN_TTL_HOURS", "168"))
 SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "30"))
 if SESSION_TTL_DAYS < 1:
     raise ValueError("SESSION_TTL_DAYS must be at least 1")
@@ -98,6 +107,14 @@ def config_problems() -> list[str]:
     """Return human-readable configuration problems (empty list = fine)."""
     problems = []
 
+    if GUEST_TOKEN_TTL_HOURS < 1 or GUEST_TOKEN_TTL_HOURS > 168:
+        problems.append("GUEST_TOKEN_TTL_HOURS must be between 1 and 168")
+    if IS_PRODUCTION and (not GUEST_TOKEN_SECRET or len(GUEST_TOKEN_SECRET) < 32):
+        problems.append("GUEST_TOKEN_SECRET must be at least 32 characters in production")
+    if IS_PRODUCTION and (not CLERK_ISSUER_URL or not CLERK_JWKS_URL):
+        problems.append("CLERK_ISSUER_URL and CLERK_JWKS_URL are required in production")
+    if IS_PRODUCTION and not AUTHORIZED_PARTIES:
+        problems.append("AUTHORIZED_PARTIES must contain your trusted frontend origins in production")
     if not MONGO_URI:
         problems.append("MONGO_URI is not set")
     if not MONGO_DB:

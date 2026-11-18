@@ -28,8 +28,10 @@ async def search_alternatives(req: RebookingSearchRequest):
     """
     try:
         return await asyncio.to_thread(search_flight_offers, req)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Flight search failed: {str(exc)}")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Flight schedule search is temporarily unavailable")
 
 
 @router.post("/select", response_model=RebookingHandoffResponse, summary="Select flight offer and request confirmation/handoff")
@@ -41,8 +43,10 @@ async def select_alternative(req: RebookingSelectRequest):
     """
     try:
         return await asyncio.to_thread(process_rebooking_selection, req)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Rebooking selection failed: {str(exc)}")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Rebooking selection failed")
 
 
 @router.post("/stream", summary="Stream flight alternative search via SSE")
@@ -61,6 +65,7 @@ async def stream_rebooking(req: RebookingSearchRequest):
             yield _sse_event("offers", {
                 "count": res.offers_count,
                 "offers": [o.model_dump() for o in res.offers],
+                "search_status": res.search_status,
             })
 
             yield _sse_event("rights", {
@@ -73,8 +78,8 @@ async def stream_rebooking(req: RebookingSearchRequest):
                 "destination": res.destination,
             })
 
-        except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)})
+        except Exception:
+            yield _sse_event("error", {"message": "Flight schedule search is temporarily unavailable."})
             yield _sse_event("done", {"status": "failed"})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

@@ -22,7 +22,7 @@ def _sse_event(name: str, data: Any) -> str:
 async def evaluate_stay_and_transport(req: EmergencyStayRequest):
     """
     Evaluate statutory duty of care under DGCA Para 3.4.3 & 3.8.1 (b).
-    Returns verified nearby hotel directory, taxi transport benchmarks,
+    Returns curated hotel directory references and clearly labelled taxi estimates,
     and official counter demand scripts.
     """
     try:
@@ -75,8 +75,8 @@ async def stream_stay(req: EmergencyStayRequest):
                 "duty_mandated": res.duty_of_care_mandated,
             })
 
-        except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)})
+        except Exception:
+            yield _sse_event("error", {"message": "Emergency stay information is temporarily unavailable."})
             yield _sse_event("done", {"status": "failed"})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

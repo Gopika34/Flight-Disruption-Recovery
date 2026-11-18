@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas.capabilities import AirlineContact, ClaimPackageRequest, ClaimPackageResponse
-from app.services.claims import AIRLINE_REGISTRY, build_claim_package
+from app.services.claims import AIRLINE_REGISTRY, ClaimFactsIncomplete, build_claim_package
 
 router = APIRouter(prefix="/claims", tags=["Passenger Claims"])
 
@@ -29,8 +29,15 @@ async def generate_claim(req: ClaimPackageRequest):
     """
     try:
         return await asyncio.to_thread(build_claim_package, req)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to generate claim package: {str(exc)}")
+    except ClaimFactsIncomplete as exc:
+        raise HTTPException(status_code=422, detail={
+            "status": exc.status,
+            "missing_facts": exc.missing_facts,
+            "notes": exc.notes,
+            "message": "Please provide the missing facts before generating a claim package.",
+        })
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to generate claim package")
 
 
 @router.post("/stream", summary="Stream claim package generation via Server-Sent Events (SSE)")
@@ -65,17 +72,8 @@ async def stream_claim(req: ClaimPackageRequest):
 
             yield _sse_event("status", {"message": "Drafting statutory grievance notice..."})
 
-            # Stream notice tokens
-            words = pkg.formal_grievance_notice.split(" ")
-            chunk = []
-            for word in words:
-                chunk.append(word)
-                if len(chunk) >= 6:
-                    yield _sse_event("token", {"text": " ".join(chunk) + " "})
-                    chunk = []
-                    await asyncio.sleep(0.015)
-            if chunk:
-                yield _sse_event("token", {"text": " ".join(chunk)})
+            # This is a deterministic document, not model token output.
+            yield _sse_event("notice", {"text": pkg.formal_grievance_notice})
 
             yield _sse_event("escalation", {
                 "instructions": pkg.escalation_instructions
@@ -87,8 +85,13 @@ async def stream_claim(req: ClaimPackageRequest):
                 "statutory_compensation_inr": pkg.statutory_compensation_inr,
             })
 
-        except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)})
+        except ClaimFactsIncomplete as exc:
+            yield _sse_event("needs_more_info", {
+                "status": exc.status, "missing_facts": exc.missing_facts, "notes": exc.notes
+            })
+            yield _sse_event("done", {"status": "needs_more_info"})
+        except Exception:
+            yield _sse_event("error", {"message": "Claim package generation failed. Please retry."})
             yield _sse_event("done", {"status": "failed"})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
