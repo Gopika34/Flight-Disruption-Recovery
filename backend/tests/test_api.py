@@ -338,3 +338,56 @@ def test_flight_status_endpoint_sanitises_provider_errors(monkeypatch):
     response = client.get("/flights/AI202")
     assert response.status_code == 503
     assert "AirLabs quota reached" in response.text
+
+# ---------- LangChain agent request validation and known-fact forwarding ----------
+
+def test_agent_request_rejects_unknown_known_fact_fields():
+    response = client.post(
+        "/agent/ask",
+        json={"message": "What are my passenger rights?", "known_facts": {"pnr": "ABC123"}},
+    )
+    assert response.status_code == 422
+
+
+def test_agent_endpoint_passes_validated_facts_and_verified_owner(monkeypatch):
+    captured = {}
+
+    def fake_run_agent(message, session_id, owner_id, known_facts):
+        captured.update(message=message, session_id=session_id, owner_id=owner_id, known_facts=known_facts)
+        return "Agent test response"
+
+    monkeypatch.setattr(main, "run_agent", fake_run_agent)
+    response = client.post(
+        "/agent/ask",
+        json={
+            "message": "My flight was delayed. What are my rights?",
+            "known_facts": {"type": "delay", "delay_minutes": 240, "flight_number": "6e204"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["response"] == "Agent test response"
+    assert captured["owner_id"] == "test_user"
+    assert captured["known_facts"] == {"type": "delay", "delay_minutes": 240, "flight_number": "6E204"}
+
+
+def test_agent_stream_endpoint_passes_validated_facts(monkeypatch):
+    captured = {}
+
+    async def fake_stream(message, session_id, owner_id, known_facts):
+        captured.update(message=message, session_id=session_id, owner_id=owner_id, known_facts=known_facts)
+        yield "session", {"session_id": session_id}
+        yield "token", {"text": "streamed"}
+        yield "done", {"status": "complete", "session_id": session_id}
+
+    monkeypatch.setattr(main, "stream_agent_events", fake_stream)
+    response = client.post(
+        "/agent/ask/stream",
+        headers={"Accept": "text/event-stream"},
+        json={"message": "My flight was delayed. What are my rights?", "known_facts": {"type": "delay", "delay_minutes": 90}},
+    )
+
+    assert response.status_code == 200
+    assert "event: token" in response.text
+    assert captured["owner_id"] == "test_user"
+    assert captured["known_facts"] == {"type": "delay", "delay_minutes": 90}

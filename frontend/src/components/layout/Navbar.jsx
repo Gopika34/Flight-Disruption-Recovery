@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Plane, ShieldAlert, Sparkles, MessageSquare, BookOpen, RotateCcw, Menu, X, PlusCircle } from 'lucide-react';
 import { Button } from '../ui/button';
 import { BackendStatusPill } from './BackendStatusPill';
+import { AuthControls } from '../auth/AuthControls';
 import { useSession } from '../../context/SessionContext';
 
 export function Navbar() {
@@ -72,6 +73,7 @@ export function Navbar() {
         {/* Action Controls */}
         <div className="flex items-center gap-3 shrink-0">
           <BackendStatusPill />
+          <AuthControls />
 
           <Button
             size="sm"

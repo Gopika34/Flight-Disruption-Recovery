@@ -548,7 +548,7 @@ def agent_ask(body: AskIn, principal: Principal = Depends(get_current_principal)
     session_id = body.session_id or str(uuid4())
 
     try:
-        response = run_agent(body.message, session_id=session_id, owner_id=principal.owner_id)
+        response = run_agent(body.message, session_id=session_id, owner_id=principal.owner_id, known_facts=body.known_facts)
 
         return {
             "status": "success",
@@ -580,7 +580,7 @@ async def agent_ask_stream(body: AskIn, principal: Principal = Depends(get_curre
     async def event_generator():
         try:
             async for event_name, event_data in stream_agent_events(
-                body.message, session_id=session_id, owner_id=principal.owner_id
+                body.message, session_id=session_id, owner_id=principal.owner_id, known_facts=body.known_facts
             ):
                 yield _sse_event(event_name, event_data)
         except Exception:

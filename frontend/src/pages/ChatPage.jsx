@@ -20,7 +20,8 @@ import {
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { useSession } from '../context/SessionContext';
-import { streamAskAssistant, formatApiError } from '../services/api';
+import { formatApiError } from '../services/api';
+import { streamAgentAssistant } from '../services/agentApi';
 
 const PROMPT_SUGGESTIONS = [
   'My flight 6E204 was delayed by 4 hours. What are my rights?',
@@ -141,7 +142,7 @@ export function ChatPage() {
 
     let activeSessionId = sessionId;
 
-    await streamAskAssistant({
+    await streamAgentAssistant({
       message: textToSend,
       sessionId: activeSessionId,
       knownFacts: knownFacts,
@@ -154,6 +155,14 @@ export function ChatPage() {
           recordSession(data.session_id, {
             title: textToSend.slice(0, 30),
           });
+        } else if (type === 'route') {
+          setMessages((prev) => prev.map((msg) => msg.id === assistantMsgId ? { ...msg, routeIntent: data.intent } : msg));
+        } else if (type === 'tool_start') {
+          setMessages((prev) => prev.map((msg) => msg.id === assistantMsgId ? { ...msg, activity: `Using ${String(data.tool || 'a FlightGuard service').replaceAll('_', ' ')}…` } : msg));
+        } else if (type === 'tool_end') {
+          setMessages((prev) => prev.map((msg) => msg.id === assistantMsgId ? { ...msg, activity: null } : msg));
+        } else if (type === 'status') {
+          setMessages((prev) => prev.map((msg) => msg.id === assistantMsgId ? { ...msg, activity: data.message } : msg));
         } else if (type === 'question') {
           setMessages((prev) =>
             prev.map((msg) =>
@@ -201,8 +210,9 @@ export function ChatPage() {
             )
           );
         } else if (type === 'error') {
-          const errText = formatApiError(data, 'An error occurred during evaluation.');
+          const errText = formatApiError(data, 'The AI assistant is temporarily unavailable.');
           setError(errText);
+          setMessages((prev) => prev.map((msg) => msg.id === assistantMsgId ? { ...msg, isStreaming: false, activity: null } : msg));
         }
       },
       onError: (err) => {

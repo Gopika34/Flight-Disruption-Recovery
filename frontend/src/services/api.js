@@ -1,6 +1,8 @@
 import axios from 'axios';
+import { API_BASE_URL } from './apiBase';
+import { getApiToken } from './authToken';
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+export { API_BASE_URL };
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -45,6 +47,15 @@ export function formatApiError(data, fallback = 'An unexpected error occurred.')
     return fallback;
   }
 }
+
+apiClient.interceptors.request.use(async (config) => {
+  const token = await getApiToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 apiClient.interceptors.response.use(
   (response) => response,
@@ -138,11 +149,13 @@ export async function streamAskAssistant({
   const url = `${API_BASE_URL.replace(/\/$/, '')}/ask/stream`;
 
   try {
+    const token = await getApiToken();
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(payload),
     });
