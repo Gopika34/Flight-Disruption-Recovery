@@ -2,7 +2,9 @@ import json
 import logging
 import re
 
-from app.llm.router import complete, stream_complete
+# from app.llm.router import complete, stream_complete
+from app.llm.router import complete
+
 from app.schemas.scenario import sanitize_facts
 from app.loaders.prompt_loader import load_prompt
 
@@ -313,16 +315,35 @@ def explanation_prompt(message, plan):
     )
 
 
+# def stream_explain(message, plan):
+#     """
+#     Stream a passenger-facing explanation.
+
+#     All compensation and eligibility decisions come from Python.
+#     """
+
+#     prompt = explanation_prompt(message, plan)
+
+#     yield from stream_complete(
+#         prompt,
+#         temperature=0.2,
+#     )
+
 def stream_explain(message, plan):
     """
-    Stream a passenger-facing explanation.
+    Stream explanation through LangChain.
 
-    All compensation and eligibility decisions come from Python.
+    Provider retries and fallback are handled by
+    the existing multi-provider router.
     """
+
+    from app.llm.langchain_layer import stream_response
 
     prompt = explanation_prompt(message, plan)
 
-    yield from stream_complete(
+    fallback = build_explanation(plan)
+
+    yield from stream_response(
         prompt,
-        temperature=0.2,
+        fallback=fallback,
     )

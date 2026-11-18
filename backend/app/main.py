@@ -28,6 +28,11 @@ from app.rag.retriever import (
     vector_index_status,
 )
 from app.rag import generation
+
+from app.llm.langchain_layer import (
+    create_explanation_chain,
+)
+
 from app.rules.rule_engine import evaluate
 from app.schemas.scenario import Scenario, AskIn
 from app.services.recovery import plan_recovery, enrich_facts
@@ -35,6 +40,11 @@ from app.services.flights import FlightDataError, get_flight_status
 from app.llm.router import provider_status
 from app.services.clarification import questions_for
 from app.services.sessions import load_facts, save_facts, close_session_cache
+
+from app.llm.agent import run_agent, stream_agent_events
+from app.routers.claims import router as claims_router
+from app.routers.rebooking import router as rebooking_router
+from app.routers.stay_transport import router as stay_transport_router
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -60,8 +70,8 @@ async def lifespan(_app):
 
 app = FastAPI(
     lifespan=lifespan,
-    docs_url="/docs" if ENABLE_DOCS else None,
-    redoc_url="/redoc" if ENABLE_DOCS else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 
     title="Flight Disruption Recovery Engine",
@@ -144,6 +154,20 @@ def rate_limit(request: Request):
             detail="Too many requests. Please wait a minute and try again.",
             headers={"Retry-After": str(_WINDOW_S)},
         )
+
+
+# --------------------------------------------------
+# EXPANDED CAPABILITY ROUTERS
+# --------------------------------------------------
+
+app.include_router(claims_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
+app.include_router(rebooking_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
+app.include_router(stay_transport_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
+
+# Aliases for frontend convenience
+app.include_router(claims_router, prefix="/api", dependencies=[Depends(rate_limit)])
+app.include_router(rebooking_router, prefix="/api", dependencies=[Depends(rate_limit)])
+app.include_router(stay_transport_router, prefix="/api", dependencies=[Depends(rate_limit)])
 
 # --------------------------------------------------
 # ROOT / HEALTH
@@ -452,8 +476,21 @@ def ask(body: AskIn):
             ),
         }
 
+    # 7. Generate explanation using LangChain.
+    prompt = generation.explanation_prompt(
+        body.message,
+        plan,
+    )
+
+    explanation_chain = create_explanation_chain()
+
+    explanation = explanation_chain.invoke({
+        "prompt": prompt,
+        "plan": plan,
+    })
+    
     # 7. Generate the explanation locally. No LLM request.
-    explanation = generation.build_explanation(plan)
+    # explanation = generation.build_explanation(plan)
 
     evidence_status = plan.get("evidence", {}).get("status")
 
@@ -481,6 +518,61 @@ def ask(body: AskIn):
         **plan,
     }
     
+    
+# --------------------------------------------------
+# LANGCHAIN TOOL-CALLING AGENT
+# --------------------------------------------------
+
+@app.post(
+    "/agent/ask",
+    tags=["AI Agent"],
+    dependencies=[Depends(rate_limit)],
+)
+def agent_ask(body: AskIn):
+    session_id = body.session_id or str(uuid4())
+
+    try:
+        response = run_agent(body.message, session_id=session_id)
+
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "response": response,
+            "agent": "langchain",
+        }
+
+    except Exception:
+        logger.exception("LangChain agent execution failed")
+
+        raise HTTPException(
+            status_code=502,
+            detail="The AI agent is temporarily unavailable.",
+        )
+
+
+@app.post(
+    "/agent/ask/stream",
+    tags=["AI Agent"],
+    dependencies=[Depends(rate_limit)],
+)
+async def agent_ask_stream(body: AskIn):
+    """
+    Stream LangChain agent thoughts, tool execution lifecycle, and response tokens via SSE.
+    """
+    session_id = body.session_id or str(uuid4())
+
+    async def event_generator():
+        try:
+            for event_name, event_data in stream_agent_events(body.message, session_id=session_id):
+                yield _sse_event(event_name, event_data)
+                await asyncio.sleep(0.01)
+        except Exception as exc:
+            yield _sse_event("error", {"message": str(exc)})
+            yield _sse_event("done", {"status": "failed", "session_id": session_id})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+        
+
 # --------------------------------------------------
 # STREAMING NATURAL LANGUAGE PASSENGER INTERFACE
 # --------------------------------------------------
