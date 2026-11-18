@@ -2,8 +2,11 @@ import { API_BASE_URL } from './apiBase.js';
 import { getApiToken } from './authToken.js';
 
 /** Stream the LangChain agent. Browser receives only safe lifecycle metadata and text chunks. */
-export async function streamAgentAssistant({ message, sessionId = null, onEvent, onError, onComplete, signal }) {
-  const payload = { message };
+export async function streamAgentAssistant({ message, sessionId = null, knownFacts = {}, onEvent, onError, onComplete, signal }) {
+  // The backend validates every field against the Scenario schema. MongoDB
+  // history remains the conversation source of truth; known_facts is the
+  // explicit structured context needed by deterministic tools.
+  const payload = { message, known_facts: knownFacts && typeof knownFacts === 'object' ? knownFacts : {} };
   if (sessionId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) payload.session_id = sessionId;
   try {
     const token = await getApiToken();
