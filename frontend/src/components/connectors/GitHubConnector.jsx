@@ -1,4 +1,4 @@
-import React,{ useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import { Github, Link2, Unlink, LoaderCircle, ShieldCheck } from 'lucide-react';
 import { apiClient } from '../../services/api';
 
@@ -55,7 +55,7 @@ export function GitHubConnector() {
               {status.loading ? 'Checking…' : status.connected ? 'Connected' : 'Not connected'}
             </span>
           </div>
-          <p className="mt-1 text-sm text-slate-400">Allow FlightGuard AI agent to search code, list repositories, read files and inspect issues through read-only MCP tools.</p>
+          <p className="mt-1 text-sm text-slate-400">Allow FlightGuard's AI agent to search code, list repositories, read files and inspect issues through read-only MCP tools.</p>
           {status.account?.login && <p className="mt-3 text-sm text-slate-300">Connected as <strong>@{status.account.login}</strong> <span className="text-slate-500">({status.account.auth_type || 'OAuth'})</span></p>}
           <div className="mt-4 flex flex-wrap gap-2">
             {status.connected ? (

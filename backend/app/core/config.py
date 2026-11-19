@@ -155,7 +155,7 @@ ENABLE_DOCS = _bool("ENABLE_DOCS", not IS_PRODUCTION)
 # GitHub App connector + local MCP server
 # ---------------------------------------------------------------------------
 GITHUB_MCP_ENABLED = _bool("GITHUB_MCP_ENABLED", True)
-ALLOW_GITHUB_PAT_IMPORT = _bool("ALLOW_GITHUB_PAT_IMPORT", False)
+ALLOW_GITHUB_PAT_IMPORT = _bool("ALLOW_GITHUB_PAT_IMPORT", True)
 # Fernet key used to encrypt user and refresh tokens at rest.
 GITHUB_TOKEN_ENCRYPTION_KEY = os.getenv("GITHUB_TOKEN_ENCRYPTION_KEY", "")
 GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "").strip()

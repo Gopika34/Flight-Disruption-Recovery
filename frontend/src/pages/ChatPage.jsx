@@ -16,12 +16,15 @@ import {
   Bot,
   MessageSquare,
   ShieldCheck,
+  Plus,
+  X,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { useSession } from '../context/SessionContext';
 import { formatApiError } from '../services/api';
 import { streamAgentAssistant } from '../services/agentApi';
+import { ChatPluginPicker } from '../components/connectors/ChatPluginPicker';
 
 const PROMPT_SUGGESTIONS = [
   'My flight 6E204 was delayed by 4 hours. What are my rights?',
@@ -60,6 +63,7 @@ export function ChatPage() {
   });
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState(null);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
 
   const messagesContainerRef = useRef(null);
   const skipSyncRef = useRef(false);
@@ -429,26 +433,49 @@ export function ChatPage() {
         </div>
       )}
 
-      {/* Input Box */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSendMessage();
-        }}
-        className="flex items-center gap-2 pt-2 border-t border-slate-800"
-      >
-        <input
-          type="text"
-          value={inputMessage}
-          onChange={(e) => setInputMessage(e.target.value)}
-          placeholder="Describe your flight disruption or answer follow-up questions..."
-          disabled={streaming}
-          className="flex-1 bg-slate-900 border border-slate-700/80 rounded-xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-teal-500 transition-colors"
-        />
-        <Button type="submit" disabled={streaming || !inputMessage.trim()} size="default">
-          <Send className="w-4 h-4" />
-        </Button>
-      </form>
+      {/* Chat composer + plugin picker */}
+      <div className="relative border-t border-slate-800 pt-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleSendMessage();
+          }}
+          className="flex items-center gap-2"
+        >
+          <div className="relative shrink-0">
+            {pluginsOpen && (
+              <ChatPluginPicker onClose={() => setPluginsOpen(false)} />
+            )}
+
+            <button
+              type="button"
+              onClick={() => setPluginsOpen((open) => !open)}
+              aria-label={pluginsOpen ? 'Close plugins' : 'Open plugins'}
+              aria-expanded={pluginsOpen}
+              className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${
+                pluginsOpen
+                  ? 'border-teal-400 bg-teal-400/10 text-teal-300'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-teal-500 hover:text-white'
+              }`}
+            >
+              {pluginsOpen ? <X className="h-4 w-4" /> : <Plus className="h-5 w-5" />}
+            </button>
+          </div>
+
+          <input
+            type="text"
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            placeholder="Ask about your flight or connected plugins..."
+            disabled={streaming}
+            className="min-w-0 flex-1 rounded-xl border border-slate-700/80 bg-slate-900 px-4 py-2.5 text-xs text-white placeholder:text-slate-500 transition-colors focus:border-teal-500 focus:outline-none"
+          />
+
+          <Button type="submit" disabled={streaming || !inputMessage.trim()} size="default">
+            <Send className="h-4 w-4" />
+          </Button>
+        </form>
+      </div>
     </div>
   );
 }

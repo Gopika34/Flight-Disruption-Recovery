@@ -1,30 +1,19 @@
-# backend/app/services/mongo.py
 
-import os
-from functools import lru_cache
+"""Shared MongoDB connection wrapper used by FlightGuard services."""
 
-from pymongo import MongoClient
 from pymongo.database import Database
-from app.rag.retriever import get_database
 
-@lru_cache(maxsize=1)
-def get_mongo_client() -> MongoClient:
-    mongo_uri = os.getenv("MONGODB_URI")
-
-    if not mongo_uri:
-        raise RuntimeError("MONGODB_URI is not configured")
-
-    return MongoClient(
-        mongo_uri,
-        serverSelectionTimeoutMS=5000,
-    )
+from app.rag.retriever import (
+    get_database as _get_shared_database,
+    close_client,
+)
 
 
 def get_database() -> Database:
+    """Return the application's shared MongoDB database."""
     return _get_shared_database()
 
 
 def close_mongo_connection() -> None:
-    if get_mongo_client.cache_info().currsize:
-        get_mongo_client().close()
-        get_mongo_client.cache_clear()
+    """Close the shared MongoDB client during application shutdown."""
+    close_client()

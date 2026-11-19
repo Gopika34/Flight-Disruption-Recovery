@@ -23,9 +23,11 @@ async def _session_call(principal: Principal, operation: str, arguments: dict | 
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        env = {"PATH": os.environ.get("PATH", ""),
-               "PYTHONPATH": backend_dir,
-               "GITHUB_ACCESS_TOKEN": token}
+        # Preserve platform variables (notably SystemRoot on Windows) while
+        # passing the per-user GitHub credential only to this child process.
+        env = dict(os.environ)
+        env["PYTHONPATH"] = backend_dir
+        env["GITHUB_ACCESS_TOKEN"] = token
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "app.mcp.github_server"],
