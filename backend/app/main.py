@@ -1,15 +1,13 @@
 import asyncio
 import json
 import logging
-import time
 from uuid import uuid4
-from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from app.core.auth import get_current_principal, Principal, router as auth_router
+from app.core.auth import get_current_principal, get_optional_principal, Principal, router as auth_router
 from pydantic import ValidationError
 
 from app.core.config import (
@@ -19,6 +17,7 @@ from app.core.config import (
     AIRLABS_API_KEY,
     RATE_LIMIT_PER_MINUTE,
     TRUSTED_PROXY_COUNT,
+    USER_RATE_LIMIT_PER_MINUTE,
     IS_PRODUCTION,
     validate_production_config,
 )
@@ -47,6 +46,13 @@ from app.llm.intent_router import classify_intent
 from app.routers.claims import router as claims_router
 from app.routers.rebooking import router as rebooking_router
 from app.routers.stay_transport import router as stay_transport_router
+
+from app.api.connectors import router as connectors_router
+from app.api.admin import router as admin_router
+from app.api.sessions import router as sessions_router
+from app.core.rate_limiter import SlidingWindowLimiter
+from app.core.authz import require_permission, effective_role
+from app.core.auth import _verify_guest, _verify_clerk
 
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -87,75 +93,46 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=False,          # the API uses no cookies
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
-
 # --------------------------------------------------
-# RATE LIMITING (per client IP, in memory, per worker)
+# RATE LIMITING (per authenticated identity + IP fallback)
 # --------------------------------------------------
-
-_hits: dict[str, deque] = {}
-_last_sweep = 0.0
 _WINDOW_S = 60
-_MAX_TRACKED_IPS = 10000
-
+_user_limiter = SlidingWindowLimiter(USER_RATE_LIMIT_PER_MINUTE, _WINDOW_S)
+_ip_limiter = SlidingWindowLimiter(RATE_LIMIT_PER_MINUTE, _WINDOW_S)
+# Backwards-compatible test hook used by the existing test suite.
+_hits = _ip_limiter._hits
 
 def client_ip(conn) -> str:
-    """Real client address for a Request or WebSocket.
-
-    X-Forwarded-For is client-controlled on its left side, so it is only read
-    when TRUSTED_PROXY_COUNT > 0, and then we take the hop appended by OUR
-    outermost proxy (counted from the right), never the first value.
-    """
+    """Use forwarded addresses only when an explicitly trusted proxy is configured."""
     peer = conn.client.host if conn.client else "unknown"
     if TRUSTED_PROXY_COUNT <= 0:
         return peer
     hops = [h.strip() for h in conn.headers.get("x-forwarded-for", "").split(",") if h.strip()]
-    if len(hops) >= TRUSTED_PROXY_COUNT:
-        return hops[-TRUSTED_PROXY_COUNT]
-    return peer
+    return hops[-TRUSTED_PROXY_COUNT] if len(hops) >= TRUSTED_PROXY_COUNT else peer
 
+def allow_request(identity: str) -> bool:
+    """Compatibility helper for WebSocket/IP-only callers."""
+    return _ip_limiter.allow(identity)
 
-def _sweep(now):
-    """Drop idle IPs so memory stays bounded."""
-    global _last_sweep
-    if now - _last_sweep < _WINDOW_S and len(_hits) <= _MAX_TRACKED_IPS:
-        return
-    _last_sweep = now
-    for key in [k for k, v in _hits.items() if not v or now - v[-1] > _WINDOW_S]:
-        del _hits[key]
-
-
-def allow_request(ip: str) -> bool:
-    if RATE_LIMIT_PER_MINUTE <= 0:
-        return True
-    now = time.monotonic()
-    _sweep(now)
-    window = _hits.get(ip)
-    if window is None:
-        if len(_hits) >= _MAX_TRACKED_IPS:
-            # Do not grow the in-memory limiter without bound under IP churn.
-            return False
-        window = _hits[ip] = deque()
-    while window and now - window[0] > _WINDOW_S:
-        window.popleft()
-    if len(window) >= RATE_LIMIT_PER_MINUTE:
-        return False
-    window.append(now)
-    return True
-
-
-def rate_limit(request: Request):
-    """Protect the expensive endpoints (LLM + vector search + AirLabs)."""
-    if not allow_request(client_ip(request)):
-        raise HTTPException(
-            status_code=429,
+def rate_limit(request: Request, principal: Principal | None = Depends(get_optional_principal)):
+    ip = client_ip(request)
+    identity = f"user:{principal.owner_id}" if principal else f"ip:{ip}"
+    if not _user_limiter.allow(identity) or not _ip_limiter.allow(ip):
+        raise HTTPException(status_code=429,
             detail="Too many requests. Please wait a minute and try again.",
-            headers={"Retry-After": str(_WINDOW_S)},
-        )
+            headers={"Retry-After": str(_WINDOW_S)})
+
+
+# Connector, admin and session endpoints share the same identity/IP limits.
+for _router in (connectors_router, admin_router, sessions_router):
+    app.include_router(_router, dependencies=[Depends(rate_limit)])
+    app.include_router(_router, prefix="/api", dependencies=[Depends(rate_limit)])
+    app.include_router(_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
 
 
 # --------------------------------------------------
@@ -166,17 +143,17 @@ def rate_limit(request: Request):
 app.include_router(auth_router, dependencies=[Depends(rate_limit)])
 app.include_router(auth_router, prefix="/api", dependencies=[Depends(rate_limit)])
 app.include_router(auth_router, prefix="/api/v1", dependencies=[Depends(rate_limit)])
-app.include_router(claims_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(rebooking_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(stay_transport_router, dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(claims_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(rebooking_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(stay_transport_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(claims_router, dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(rebooking_router, dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(stay_transport_router, dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(claims_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(rebooking_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(stay_transport_router, prefix="/api/v1", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
 
 # Aliases for frontend convenience
-app.include_router(claims_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(rebooking_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
-app.include_router(stay_transport_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+app.include_router(claims_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(rebooking_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
+app.include_router(stay_transport_router, prefix="/api", dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
 
 # --------------------------------------------------
 # ROOT / HEALTH
@@ -241,7 +218,7 @@ def llm_status():
 # RAG POLICY SEARCH
 # --------------------------------------------------
 
-@app.get("/search", tags=["RAG"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+@app.get("/search", tags=["RAG"], dependencies=[Depends(rate_limit), Depends(require_permission("policy:read"))])
 def search(
     q: str = Query(min_length=2, max_length=300),
     k: int = Query(default=4, ge=1, le=20),
@@ -280,7 +257,7 @@ def search(
 # LIVE FLIGHT STATUS (AirLabs)
 # --------------------------------------------------
 
-@app.get("/flights/{flight_number}", tags=["Flights"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+@app.get("/flights/{flight_number}", tags=["Flights"], dependencies=[Depends(rate_limit), Depends(require_permission("flight:read"))])
 def flight_status(flight_number: str):
     """Return the closest live/scheduled flight record for an IATA flight number."""
     try:
@@ -298,7 +275,7 @@ def flight_status(flight_number: str):
 # DETERMINISTIC RULE EVALUATION
 # --------------------------------------------------
 
-@app.post("/evaluate", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+@app.post("/evaluate", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
 def evaluate_endpoint(scenario: Scenario):
     """
     Evaluate passenger facts using Python rules only.
@@ -326,7 +303,7 @@ def evaluate_endpoint(scenario: Scenario):
 # COMPLETE RECOVERY PLAN
 # --------------------------------------------------
 
-@app.post("/recover", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(get_current_principal)])
+@app.post("/recover", tags=["Recovery"], dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
 def recover(scenario: Scenario):
     """
     Generate a recovery plan containing:
@@ -361,7 +338,7 @@ def recover(scenario: Scenario):
 # --------------------------------------------------
 
 
-@app.post("/ask", tags=["AI Assistant"], dependencies=[Depends(rate_limit)])
+@app.post("/ask", tags=["AI Assistant"], dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))])
 def ask(body: AskIn, principal: Principal = Depends(get_current_principal)):
     """
     Passenger message -> one fact-extraction call -> Python rules
@@ -532,7 +509,7 @@ def ask(body: AskIn, principal: Principal = Depends(get_current_principal)):
 # LANGCHAIN TOOL-CALLING AGENT
 # --------------------------------------------------
 
-@app.post("/assistant/route", tags=["AI Agent"], dependencies=[Depends(rate_limit)])
+@app.post("/assistant/route", tags=["AI Agent"], dependencies=[Depends(rate_limit), Depends(require_permission("agent:use"))])
 def assistant_route(body: AskIn, principal: Principal = Depends(get_current_principal)):
     """Return a safe intent classification for observability; no legal decision is made here."""
     route = classify_intent(body.message)
@@ -542,13 +519,13 @@ def assistant_route(body: AskIn, principal: Principal = Depends(get_current_prin
 @app.post(
     "/agent/ask",
     tags=["AI Agent"],
-    dependencies=[Depends(rate_limit)],
+    dependencies=[Depends(rate_limit), Depends(require_permission("agent:use"))],
 )
 def agent_ask(body: AskIn, principal: Principal = Depends(get_current_principal)):
     session_id = body.session_id or str(uuid4())
 
     try:
-        response = run_agent(body.message, session_id=session_id, owner_id=principal.owner_id, known_facts=body.known_facts)
+        response = run_agent(body.message, session_id=session_id, owner_id=principal.owner_id, known_facts=body.known_facts, principal=principal)
 
         return {
             "status": "success",
@@ -569,24 +546,28 @@ def agent_ask(body: AskIn, principal: Principal = Depends(get_current_principal)
 @app.post(
     "/agent/ask/stream",
     tags=["AI Agent"],
-    dependencies=[Depends(rate_limit)],
+    dependencies=[Depends(rate_limit), Depends(require_permission("agent:use"))],
 )
-async def agent_ask_stream(body: AskIn, principal: Principal = Depends(get_current_principal)):
-    """
-    Stream model-generated text chunks and tool lifecycle events via SSE.
-    """
+async def agent_ask_stream(body: AskIn, request: Request, principal: Principal = Depends(get_current_principal)):
+    """Stream model chunks and tool lifecycle events; close the agent on disconnect."""
     session_id = body.session_id or str(uuid4())
 
     async def event_generator():
+        stream = stream_agent_events(
+            body.message, session_id=session_id, owner_id=principal.owner_id,
+            known_facts=body.known_facts, principal=principal,
+        )
         try:
-            async for event_name, event_data in stream_agent_events(
-                body.message, session_id=session_id, owner_id=principal.owner_id, known_facts=body.known_facts
-            ):
+            async for event_name, event_data in stream:
+                if await request.is_disconnected():
+                    break
                 yield _sse_event(event_name, event_data)
         except Exception:
             logger.exception("Agent streaming endpoint failed")
             yield _sse_event("error", {"message": "The AI assistant is temporarily unavailable."})
             yield _sse_event("done", {"status": "failed", "session_id": session_id})
+        finally:
+            await stream.aclose()
 
     return StreamingResponse(
         event_generator(),
@@ -625,9 +606,9 @@ def _next_stream_item(iterator):
 @app.post(
     "/ask/stream",
     tags=["AI Assistant"],
-    dependencies=[Depends(rate_limit)],
+    dependencies=[Depends(rate_limit), Depends(require_permission("recovery:use"))],
 )
-async def ask_stream(body: AskIn, principal: Principal = Depends(get_current_principal)):
+async def ask_stream(body: AskIn, request: Request, principal: Principal = Depends(get_current_principal)):
     """
     Passenger message -> fact extraction -> deterministic rules
     -> policy retrieval -> streamed LLM explanation.
@@ -793,7 +774,11 @@ async def ask_stream(body: AskIn, principal: Principal = Depends(get_current_pri
             streamed_anything = False
 
             while True:
-
+                if await request.is_disconnected():
+                    close_iterator = getattr(iterator, "close", None)
+                    if close_iterator:
+                        await asyncio.to_thread(close_iterator)
+                    return
                 chunk = await asyncio.to_thread(
                     _next_stream_item,
                     iterator,
@@ -907,7 +892,18 @@ async def simulate(ws: WebSocket):
         origin_ok = not IS_PRODUCTION
     else:
         origin_ok = origin in CORS_ORIGINS
-    if not origin_ok or not allow_request(client_ip(ws)):
+    authorization = ws.headers.get("authorization", "")
+    principal = None
+    if authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        try:
+            principal = _verify_guest(token) or _verify_clerk(token)
+        except HTTPException:
+            principal = None
+    if (not origin_ok or principal is None
+            or effective_role(principal) not in {"user", "admin"}
+            or not _user_limiter.allow(f"user:{principal.owner_id}")
+            or not allow_request(client_ip(ws))):
         await ws.close(code=1008)          # policy violation
         return
 

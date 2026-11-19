@@ -10,6 +10,7 @@ import { ResultsPage } from './pages/ResultsPage';
 import { EvidencePage } from './pages/EvidencePage';
 import { RecoveryPage } from './pages/RecoveryPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { IntegrationsPage } from './pages/IntegrationsPage';
 import { FloatingChatbot } from './components/layout/FloatingChatbot';
 
 function AppLayout() {
@@ -28,6 +29,7 @@ function AppLayout() {
           <Route path="/results" element={<ResultsPage />} />
           <Route path="/evidence" element={<EvidencePage />} />
           <Route path="/recovery" element={<RecoveryPage />} />
+          <Route path="/integrations" element={<IntegrationsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>

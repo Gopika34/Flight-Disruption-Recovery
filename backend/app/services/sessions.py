@@ -111,3 +111,12 @@ def load_session(session_id: str, owner_id: str = "legacy_unowned") -> dict:
 
 def close_session_cache() -> None:
     _sessions.cache_clear()
+
+
+def delete_session(session_id: str, owner_id: str) -> bool:
+    """Delete only a session owned by the supplied principal."""
+    try:
+        result = _sessions().delete_one({"_id": session_id, "owner_id": owner_id})
+        return result.deleted_count == 1
+    except PyMongoError as exc:
+        raise RuntimeError("Could not delete session from MongoDB.") from exc

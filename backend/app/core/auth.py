@@ -23,7 +23,12 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @dataclass(frozen=True)
 class Principal:
     owner_id: str
-    kind: str  # "clerk" or "guest"
+    kind: str  # "clerk", "guest", or "test"
+
+    @property
+    def role(self) -> str:
+        from app.core.authz import effective_role
+        return effective_role(self)
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +62,8 @@ def create_guest_token() -> tuple[str, str, int]:
 @router.post("/guest")
 def issue_guest_session():
     """Create a limited anonymous identity. No passenger details are required."""
+    if not C.ENABLE_GUEST_MODE:
+        raise HTTPException(status_code=404, detail="Guest access is disabled")
     try:
         token, guest_id, expires_in = create_guest_token()
     except RuntimeError as exc:
@@ -120,3 +127,14 @@ def get_current_principal(request: Request) -> Principal:
     if guest:
         return guest
     return _verify_clerk(token)
+
+
+def get_optional_principal(request: Request) -> Principal | None:
+    """Authenticate when a bearer token exists; otherwise return None."""
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer "):
+        return None
+    try:
+        return get_current_principal(request)
+    except HTTPException:
+        return None

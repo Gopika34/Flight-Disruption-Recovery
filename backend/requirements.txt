@@ -25,3 +25,10 @@ langchain-openai>=1.0,<2.0
 
 # JWT verification (Clerk RS256 + signed guest HS256 tokens)
 PyJWT[crypto]>=2.10,<3.0
+
+pydantic-settings
+
+mongomock
+cryptography
+# Standard Model Context Protocol client/server SDK
+mcp>=1.9,<2.0

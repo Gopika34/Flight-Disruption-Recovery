@@ -15,6 +15,8 @@ class IntentRoute:
 
 def classify_intent(message: str) -> IntentRoute:
     text = re.sub(r"\s+", " ", (message or "").lower()).strip()
+    if re.search(r"\b(github|repository|repositories|repo|pull request|code search|github issue)\b", text):
+        return IntentRoute("github", "agent_with_github_mcp", "The request concerns the user connected GitHub account.")
     if re.search(r"\b(compensation|eligible|entitled|refund amount|how much.*(refund|compensation)|claim amount)\b", text):
         return IntentRoute("entitlement", "agent_with_rules", "Entitlement questions must use the deterministic rule engine.")
     if re.search(r"\b(status|where is|departure|arrival|running late)\b", text) and re.search(r"\b(?:[a-z]{1,3}\s?\d{2,4}|\d[a-z]\s?\d{2,4})\b", text):

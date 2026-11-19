@@ -18,15 +18,30 @@ app.all('/api/*', async (req, res) => {
   const targetPath = req.originalUrl.replace(/^\/api/, '');
   const targetUrl = `${BACKEND_BASE.replace(/\/$/, '')}${targetPath}`;
 
-  // If this is the SSE streaming endpoint, handle as stream
-  if (targetPath.startsWith('/ask/stream')) {
+  console.log('[API PROXY]', {
+    incoming: req.originalUrl,
+    backend: BACKEND_BASE,
+    target: targetUrl,
+  });
+
+  const authHeader = req.headers['authorization'];
+  const baseHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'FlightGuard-Frontend/1.0',
+  };
+  if (authHeader) {
+    baseHeaders['Authorization'] = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+  }
+
+  // Handle SSE streaming endpoints (/ask/stream, /agent/ask/stream, /claims/stream, etc.)
+  const isStream = targetPath.includes('/stream');
+  if (isStream) {
     try {
       const upstreamRes = await fetch(targetUrl, {
         method: req.method,
         headers: {
-          'Content-Type': 'application/json',
+          ...baseHeaders,
           'Accept': 'text/event-stream',
-          'User-Agent': 'FlightGuard-Frontend/1.0',
         },
         body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
       });
@@ -76,10 +91,7 @@ app.all('/api/*', async (req, res) => {
   try {
     const upstreamRes = await fetch(targetUrl, {
       method: req.method,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'FlightGuard-Frontend/1.0',
-      },
+      headers: baseHeaders,
       body: req.method !== 'GET' && req.method !== 'HEAD' ? JSON.stringify(req.body) : undefined,
     });
 

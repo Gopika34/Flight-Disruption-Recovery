@@ -1,6 +1,5 @@
 """LangChain tool-calling agent with owner-scoped memory and real event streaming."""
 import logging
-from functools import lru_cache
 from typing import Any
 
 from langchain.agents import create_agent
@@ -99,6 +98,7 @@ _ROUTE_TOOLS = {
     "claims": ("prepare_passenger_claim_package", "evaluate_disruption", "search_dgca_policy"),
     "policy_or_disruption": ("search_dgca_policy", "evaluate_disruption", "get_live_flight_status"),
     "general_flight_help": ("search_dgca_policy", "get_live_flight_status", "evaluate_disruption"),
+    "github": (),
 }
 
 
@@ -107,11 +107,21 @@ def tools_for_intent(intent: str):
     return [_ALL_TOOLS[name] for name in names]
 
 
-@lru_cache(maxsize=7)
-def create_flight_agent(intent: str = "general_flight_help"):
+def create_flight_agent(intent: str = "general_flight_help", principal=None):
+    selected_tools = tools_for_intent(intent)
+    if principal is not None and principal.kind == "guest":
+        guest_allowed = {"search_dgca_policy", "get_live_flight_status"}
+        selected_tools = [item for item in selected_tools if item.name in guest_allowed]
+    # Attach MCP only for the authenticated owner of the connected account.
+    if principal is not None and intent == "github":
+        from app.core.authz import has_permission
+        from app.services.github_connector import get_access_token
+        from app.services.github_mcp import langchain_tool_for
+        if has_permission(principal, "connector:github:read") and get_access_token(principal):
+            selected_tools.append(langchain_tool_for(principal))
     return create_agent(
         model=get_agent_chat_models(),
-        tools=tools_for_intent(intent),
+        tools=selected_tools,
         system_prompt=get_system_prompt(),
         middleware=[
             ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
@@ -142,11 +152,20 @@ def _context_message(route, known_facts: dict) -> str:
     )
 
 
-def run_agent(message: str, session_id: str | None = None, owner_id: str = "legacy_unowned", known_facts: dict | None = None) -> str:
+def run_agent(message: str, session_id: str | None = None, owner_id: str = "legacy_unowned", known_facts: dict | None = None, principal=None) -> str:
     if not isinstance(message, str) or not 3 <= len(message.strip()) <= 2000:
         raise ValueError("Message must contain between 3 and 2000 characters.")
     route = classify_intent(message)
-    agent = create_flight_agent(route.intent)
+    if principal is not None and principal.kind == "guest" and route.intent not in {"policy_or_disruption", "flight_status", "general_flight_help"}:
+        return "This recovery workflow requires a registered FlightGuard account. You can still ask basic flight-status and DGCA policy questions as a guest."
+    if route.intent == "github":
+        from app.services.github_connector import get_access_token
+        from app.core.authz import has_permission
+        if principal is None or not has_permission(principal, "connector:github:read"):
+            return "Connect a registered FlightGuard account with GitHub access before requesting repository information."
+        if not get_access_token(principal):
+            return "GitHub is not connected yet. Open Integrations and connect your GitHub account first."
+    agent = create_flight_agent(route.intent, principal)
     facts = _merge_known_facts(session_id, owner_id, known_facts)
     history = load_messages(session_id, owner_id) if session_id else []
     messages = [SystemMessage(content=_context_message(route, facts)), *list(history)]
@@ -159,13 +178,28 @@ def run_agent(message: str, session_id: str | None = None, owner_id: str = "lega
     return final_content
 
 
-async def stream_agent_events(message: str, session_id: str | None = None, owner_id: str = "legacy_unowned", known_facts: dict | None = None):
+async def stream_agent_events(message: str, session_id: str | None = None, owner_id: str = "legacy_unowned", known_facts: dict | None = None, principal=None):
     """Stream genuine model chunks and tool lifecycle events through LangChain v2."""
     if not isinstance(message, str) or not 3 <= len(message.strip()) <= 2000:
         yield "error", {"message": "Message must contain between 3 and 2000 characters."}
         return
     route = classify_intent(message)
-    agent = create_flight_agent(route.intent)
+    if principal is not None and principal.kind == "guest" and route.intent not in {"policy_or_disruption", "flight_status", "general_flight_help"}:
+        yield "token", {"text": "This recovery workflow requires a registered FlightGuard account. You can still ask basic flight-status and DGCA policy questions as a guest."}
+        yield "done", {"status": "complete", "session_id": session_id}
+        return
+    if route.intent == "github":
+        from app.services.github_connector import get_access_token
+        from app.core.authz import has_permission
+        if principal is None or not has_permission(principal, "connector:github:read"):
+            yield "token", {"text": "Connect a registered FlightGuard account with GitHub access before requesting repository information."}
+            yield "done", {"status": "complete", "session_id": session_id}
+            return
+        if not get_access_token(principal):
+            yield "token", {"text": "GitHub is not connected yet. Open Integrations and connect your GitHub account first."}
+            yield "done", {"status": "complete", "session_id": session_id}
+            return
+    agent = create_flight_agent(route.intent, principal)
     facts = await __import__("asyncio").to_thread(_merge_known_facts, session_id, owner_id, known_facts)
     history = await __import__("asyncio").to_thread(load_messages, session_id, owner_id) if session_id else []
     messages = [SystemMessage(content=_context_message(route, facts)), *list(history)]
